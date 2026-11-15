@@ -58,6 +58,19 @@ export default function GmailAccountTest() {
           </li>
         ))}
       </ul>
+
+        <button onClick={testOAuthConfig}>
+        Test OAuth Config
+        </button>
     </section>
   );
+}
+
+async function testOAuthConfig() {
+  try {
+    const result = await invoke<string>("load_oauth_config");
+    alert(result);
+  } catch (error) {
+    alert(String(error));
+  }
 }
