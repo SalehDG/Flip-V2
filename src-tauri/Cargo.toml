@@ -17,12 +17,19 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.42.0", features = ["bundled"] }
+
+# Gmail OAuth
+oauth2 = "5"
+keyring = { version = "3.6.3", features = ["windows-native"] }
+url = "2.5"
+
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

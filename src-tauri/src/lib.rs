@@ -1,5 +1,6 @@
 
 mod databases;
+mod commands;
 
 use tauri::Manager;
 
@@ -30,7 +31,11 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            commands::gmail_account_commands::get_gmail_accounts,
+            commands::gmail_account_commands::update_sync_start_date,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

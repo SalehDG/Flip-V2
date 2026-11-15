@@ -1,6 +1,7 @@
 use rusqlite::{Connection, OptionalExtension, Result};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GmailAccount {
     pub id: i64,
     pub email_address: String,
