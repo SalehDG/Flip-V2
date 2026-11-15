@@ -29,6 +29,7 @@ pub fn run() {
 
             // Simpan koneksi sebagai state aplikasi.
             app.manage(database);
+            app.manage(gmail_auth::oauth_session::OAuthSessionStore::default());
 
             Ok(())
         })
@@ -36,7 +37,10 @@ pub fn run() {
             greet,
             commands::gmail_account_commands::get_gmail_accounts,
             commands::gmail_account_commands::update_sync_start_date,
-            gmail_auth::oauth_client::load_oauth_config,
+            gmail_auth::oauth_session::start_gmail_oauth,
+            gmail_auth::oauth_session::complete_gmail_oauth,
+            gmail_auth::oauth_session::cancel_gmail_oauth,
+            gmail_auth::oauth_session::disconnect_gmail_account,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

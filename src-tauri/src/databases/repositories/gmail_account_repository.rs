@@ -31,6 +31,37 @@ impl GmailAccountRepository {
         Ok(connection.last_insert_rowid())
     }
 
+    /// Create or update a connected Gmail account while preserving its sync state.
+    pub fn upsert_connected_account(
+        connection: &Connection,
+        email_address: &str,
+        token_reference: &str,
+    ) -> Result<i64> {
+        connection.execute(
+            "INSERT INTO gmail_accounts (email_address, encrypted_token_reference, account_status)
+             VALUES (?1, ?2, 'connected')
+             ON CONFLICT(email_address) DO UPDATE SET
+                encrypted_token_reference = excluded.encrypted_token_reference,
+                account_status = 'connected',
+                updated_at = CURRENT_TIMESTAMP",
+            (email_address.trim(), token_reference),
+        )?;
+        connection.query_row(
+            "SELECT id FROM gmail_accounts WHERE email_address = ?1 COLLATE NOCASE",
+            [email_address.trim()],
+            |row| row.get(0),
+        )
+    }
+
+    /// Retrieve the opaque Windows Credential Manager reference for an account.
+    pub fn find_token_reference(connection: &Connection, id: i64) -> Result<Option<String>> {
+        connection.query_row(
+            "SELECT encrypted_token_reference FROM gmail_accounts WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+    }
+
     /// Mengambil seluruh akun Gmail.
     pub fn find_all(connection: &Connection) -> Result<Vec<GmailAccount>> {
         let mut statement = connection.prepare(
@@ -215,6 +246,28 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn upserts_connected_account_and_preserves_existing_sync_settings() {
+        let connection = setup();
+        let id = GmailAccountRepository::create(&connection, "test@gmail.com").unwrap();
+        GmailAccountRepository::update_sync_start_date(&connection, id, "2026-11-01").unwrap();
+
+        let updated_id = GmailAccountRepository::upsert_connected_account(
+            &connection,
+            "TEST@gmail.com",
+            "gmail-refresh-token:test-reference",
+        ).unwrap();
+
+        assert_eq!(id, updated_id);
+        let account = GmailAccountRepository::find_by_id(&connection, id).unwrap().unwrap();
+        assert_eq!(account.account_status, "connected");
+        assert_eq!(account.sync_start_date.as_deref(), Some("2026-11-01"));
+        assert_eq!(
+            GmailAccountRepository::find_token_reference(&connection, id).unwrap().as_deref(),
+            Some("gmail-refresh-token:test-reference"),
+        );
     }
 
     #[test]

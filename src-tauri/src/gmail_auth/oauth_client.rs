@@ -1,4 +1,3 @@
-
 use oauth2::{
     basic::BasicClient,
     AuthType,
@@ -12,16 +11,8 @@ use oauth2::{
     Scope,
     TokenUrl,
 };
-
 use serde::Deserialize;
-use std::{
-    fs,
-    path::Path,
-};
-
-// ============================================================
-// 1. GOOGLE OAUTH CONFIGURATION
-// ============================================================
+use std::{fs, path::Path};
 
 #[derive(Debug, Deserialize)]
 pub struct GoogleOAuthConfig {
@@ -41,21 +32,18 @@ impl GoogleOAuthConfig {
     pub fn load(path: &Path) -> Result<Self, String> {
         let content = fs::read_to_string(path)
             .map_err(|e| format!("Failed to read OAuth config: {e}"))?;
-
         let config: Self = serde_json::from_str(&content)
             .map_err(|e| format!("Invalid OAuth config JSON: {e}"))?;
 
-        if config.installed.client_id.is_empty() {
-            return Err("OAuth client ID is empty".to_string());
+        if config.installed.client_id.trim().is_empty()
+            || config.installed.auth_uri.trim().is_empty()
+            || config.installed.token_uri.trim().is_empty()
+        {
+            return Err("OAuth configuration is incomplete".to_string());
         }
-
         Ok(config)
     }
 }
-
-// ============================================================
-// 2. PREPARED AUTHORIZATION DATA
-// ============================================================
 
 pub(crate) struct PreparedAuthorization {
     pub authorization_url: String,
@@ -63,54 +51,32 @@ pub(crate) struct PreparedAuthorization {
     pub pkce_verifier: PkceCodeVerifier,
 }
 
-// ============================================================
-// 3. BUILD AUTHORIZATION URL + PKCE
-// ============================================================
-
 pub(crate) fn build_authorization_url(
     config: &GoogleOAuthConfig,
     redirect_uri: &str,
 ) -> Result<PreparedAuthorization, String> {
-    let client_id = ClientId::new(
-        config.installed.client_id.clone()
-    );
-
-    let client_secret = ClientSecret::new(
-        config.installed.client_secret.clone()
-    );
-
-    let auth_url = AuthUrl::new(
-        config.installed.auth_uri.clone()
-    )
-    .map_err(|e| format!("Invalid authorization URL: {e}"))?;
-
-    let token_url = TokenUrl::new(
-        config.installed.token_uri.clone()
-    )
-    .map_err(|e| format!("Invalid token URL: {e}"))?;
-
-    let redirect_url = RedirectUrl::new(
-        redirect_uri.to_string()
-    )
-    .map_err(|e| format!("Invalid redirect URI: {e}"))?;
-
-    let client = BasicClient::new(client_id)
-        .set_client_secret(client_secret)
-        .set_auth_uri(auth_url)
-        .set_token_uri(token_url)
-        .set_redirect_uri(redirect_url)
+    let client = BasicClient::new(ClientId::new(config.installed.client_id.clone()))
+        .set_client_secret(ClientSecret::new(config.installed.client_secret.clone()))
+        .set_auth_uri(
+            AuthUrl::new(config.installed.auth_uri.clone())
+                .map_err(|e| format!("Invalid authorization URL: {e}"))?,
+        )
+        .set_token_uri(
+            TokenUrl::new(config.installed.token_uri.clone())
+                .map_err(|e| format!("Invalid token URL: {e}"))?,
+        )
+        .set_redirect_uri(
+            RedirectUrl::new(redirect_uri.to_string())
+                .map_err(|e| format!("Invalid redirect URI: {e}"))?,
+        )
         .set_auth_type(AuthType::RequestBody);
 
-    // Generate PKCE challenge and verifier.
-    let (pkce_challenge, pkce_verifier) =
-        PkceCodeChallenge::new_random_sha256();
-
-    // Build Google authorization URL.
+    let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
     let (authorization_url, state) = client
-    .authorize_url(CsrfToken::new_random)
-    .add_scope(Scope::new(
-        "https://www.googleapis.com/auth/gmail.readonly".to_string()
-    ))
+        .authorize_url(CsrfToken::new_random)
+        .add_scope(Scope::new(
+            "https://www.googleapis.com/auth/gmail.readonly".to_string(),
+        ))
         .add_extra_param("access_type", "offline")
         .add_extra_param("prompt", "consent")
         .set_pkce_challenge(pkce_challenge)
@@ -123,92 +89,38 @@ pub(crate) fn build_authorization_url(
     })
 }
 
-// ============================================================
-// OAUTH CONFIGURATION TEST COMMAND
-// ============================================================
-
-#[tauri::command]
-pub fn load_oauth_config() -> Result<String, String> {
-    let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../secrets/oauth-client.json");
-
-    let config = GoogleOAuthConfig::load(&config_path)?;
-
-    if config.installed.auth_uri.is_empty()
-        || config.installed.token_uri.is_empty()
-        || config.installed.redirect_uris.is_empty()
-    {
-        return Err("OAuth configuration is incomplete".to_string());
-    }
-
-    Ok("OAuth configuration loaded successfully".to_string())
-}
-
-// ============================================================
-// 4. UNIT TEST
-// ============================================================
-
 #[cfg(test)]
-mod oauth_tests {
+mod tests {
     use super::*;
+    use std::collections::HashMap;
     use url::Url;
 
     fn test_config() -> GoogleOAuthConfig {
         GoogleOAuthConfig {
             installed: InstalledConfig {
-                client_id: "test-client-id".to_string(),
-                client_secret: "test-client-secret".to_string(),
-                auth_uri: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
-                token_uri: "https://oauth2.googleapis.com/token".to_string(),
-                redirect_uris: vec![
-                    "http://localhost".to_string()
-                ],
+                client_id: "test-client-id".into(),
+                client_secret: "test-client-secret".into(),
+                auth_uri: "https://accounts.google.com/o/oauth2/v2/auth".into(),
+                token_uri: "https://oauth2.googleapis.com/token".into(),
+                redirect_uris: vec!["http://localhost".into()],
             },
         }
     }
 
     #[test]
-    fn creates_authorization_url_with_required_parameters() {
-        let config = test_config();
-
-        let result = build_authorization_url(
-            &config,
+    fn creates_authorization_url_with_pkce_and_readonly_scope() {
+        let prepared = build_authorization_url(
+            &test_config(),
             "http://127.0.0.1:49152/",
-        );
-
-        assert!(result.is_ok());
-
-        let prepared = result.unwrap();
+        ).unwrap();
         let url = Url::parse(&prepared.authorization_url).unwrap();
+        let params: HashMap<_, _> = url.query_pairs().into_owned().collect();
 
-        let params: std::collections::HashMap<_, _> =
-            url.query_pairs().into_owned().collect();
-
-        assert_eq!(
-            params.get("client_id").unwrap(),
-            "test-client-id"
-        );
-
-        assert_eq!(
-            params.get("redirect_uri").unwrap(),
-            "http://127.0.0.1:49152/"
-        );
-
-        assert_eq!(
-            params.get("scope").unwrap(),
-            "https://www.googleapis.com/auth/gmail.readonly"
-        );
-
-        assert_eq!(
-            params.get("access_type").unwrap(),
-            "offline"
-        );
-
-        assert_eq!(
-            params.get("code_challenge_method").unwrap(),
-            "S256"
-        );
-
+        assert_eq!(params.get("client_id").unwrap(), "test-client-id");
+        assert_eq!(params.get("redirect_uri").unwrap(), "http://127.0.0.1:49152/");
+        assert_eq!(params.get("scope").unwrap(), "https://www.googleapis.com/auth/gmail.readonly");
+        assert_eq!(params.get("access_type").unwrap(), "offline");
+        assert_eq!(params.get("code_challenge_method").unwrap(), "S256");
         assert!(params.contains_key("code_challenge"));
         assert!(params.contains_key("state"));
     }

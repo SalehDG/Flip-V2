@@ -29,6 +29,8 @@ rusqlite = { version = "0.42.0", features = ["bundled"] }
 oauth2 = "5"
 keyring = { version = "3.6.3", features = ["windows-native"] }
 url = "2.5"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+uuid = { version = "1", features = ["v4"] }
 
 
 
