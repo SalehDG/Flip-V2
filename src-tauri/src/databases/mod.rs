@@ -1,5 +1,5 @@
-
-mod migrations;
+pub mod repositories;
+pub(crate) mod migrations;
 
 use rusqlite::Connection;
 use std::{
