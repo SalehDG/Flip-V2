@@ -1,7 +1,7 @@
-
-mod databases;
 mod commands;
+mod databases;
 mod gmail_auth;
+mod gmail_sync;
 
 use tauri::Manager;
 
@@ -41,6 +41,8 @@ pub fn run() {
             gmail_auth::oauth_session::complete_gmail_oauth,
             gmail_auth::oauth_session::cancel_gmail_oauth,
             gmail_auth::oauth_session::disconnect_gmail_account,
+            gmail_sync::service::start_initial_gmail_sync,
+            gmail_sync::service::get_gmail_sync_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

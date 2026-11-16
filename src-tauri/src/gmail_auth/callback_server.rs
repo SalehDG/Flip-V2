@@ -21,7 +21,8 @@ impl CallbackServer {
     pub fn bind() -> Result<Self, String> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .map_err(|e| format!("Failed to start callback listener: {e}"))?;
-        let address = listener.local_addr()
+        let address = listener
+            .local_addr()
             .map_err(|e| format!("Failed to get listener address: {e}"))?;
         Ok(Self {
             listener,
@@ -34,7 +35,8 @@ impl CallbackServer {
     }
 
     pub fn wait_for_callback(self, expected_state: &str) -> Result<AuthorizationCallback, String> {
-        self.listener.set_nonblocking(true)
+        self.listener
+            .set_nonblocking(true)
             .map_err(|e| format!("Failed to configure callback listener: {e}"))?;
         let deadline = Instant::now() + Duration::from_secs(300);
 
@@ -44,9 +46,11 @@ impl CallbackServer {
             }
             match self.listener.accept() {
                 Ok((mut stream, _)) => {
-                    stream.set_nonblocking(false)
+                    stream
+                        .set_nonblocking(false)
                         .map_err(|e| format!("Failed to configure callback connection: {e}"))?;
-                    stream.set_read_timeout(Some(Duration::from_secs(10)))
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(10)))
                         .map_err(|e| format!("Failed to configure callback connection: {e}"))?;
                     if let Some(callback) = Self::handle_connection(&mut stream, expected_state)? {
                         return Ok(callback);
@@ -64,11 +68,13 @@ impl CallbackServer {
         stream: &mut TcpStream,
         expected_state: &str,
     ) -> Result<Option<AuthorizationCallback>, String> {
-        let cloned = stream.try_clone()
+        let cloned = stream
+            .try_clone()
             .map_err(|e| format!("Failed to read callback request: {e}"))?;
         let mut reader = BufReader::new(cloned);
         let mut request_line = String::new();
-        reader.read_line(&mut request_line)
+        reader
+            .read_line(&mut request_line)
             .map_err(|e| format!("Failed to read HTTP request: {e}"))?;
 
         if request_line.len() > 8192 {
@@ -77,9 +83,12 @@ impl CallbackServer {
         }
         loop {
             let mut header = String::new();
-            let bytes = reader.read_line(&mut header)
+            let bytes = reader
+                .read_line(&mut header)
                 .map_err(|e| format!("Failed to read HTTP headers: {e}"))?;
-            if bytes == 0 || header == "\r\n" || header == "\n" { break; }
+            if bytes == 0 || header == "\r\n" || header == "\n" {
+                break;
+            }
             if header.len() > 8192 {
                 Self::send_response(stream, "400 Bad Request", "Invalid request headers.")?;
                 return Ok(None);
@@ -101,26 +110,46 @@ impl CallbackServer {
         let received_state = match params.get("state") {
             Some(value) => value,
             None => {
-                Self::send_response(stream, "400 Bad Request", "Missing OAuth state. You may close this window.")?;
+                Self::send_response(
+                    stream,
+                    "400 Bad Request",
+                    "Missing OAuth state. You may close this window.",
+                )?;
                 return Ok(None);
             }
         };
         if received_state != expected_state {
-            Self::send_response(stream, "400 Bad Request", "OAuth state validation failed. You may close this window.")?;
+            Self::send_response(
+                stream,
+                "400 Bad Request",
+                "OAuth state validation failed. You may close this window.",
+            )?;
             return Ok(None);
         }
         if let Some(error) = params.get("error") {
-            Self::send_response(stream, "400 Bad Request", "Google authorization was not completed. You may close this window.")?;
+            Self::send_response(
+                stream,
+                "400 Bad Request",
+                "Google authorization was not completed. You may close this window.",
+            )?;
             return Err(format!("Google authorization failed: {error}"));
         }
         let code = match params.get("code").filter(|value| !value.is_empty()) {
             Some(value) => value.clone(),
             None => {
-                Self::send_response(stream, "400 Bad Request", "Authorization code is missing. You may close this window.")?;
+                Self::send_response(
+                    stream,
+                    "400 Bad Request",
+                    "Authorization code is missing. You may close this window.",
+                )?;
                 return Err("OAuth callback is missing authorization code".into());
             }
         };
-        Self::send_response(stream, "200 OK", "Google authorization received. You can close this window and return to Flip V2.")?;
+        Self::send_response(
+            stream,
+            "200 OK",
+            "Google authorization received. You can close this window and return to Flip V2.",
+        )?;
         Ok(Some(AuthorizationCallback { code }))
     }
 
@@ -131,11 +160,15 @@ impl CallbackServer {
         );
         let response = format!(
             "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
-            body.len(), body
+            body.len(),
+            body
         );
-        stream.write_all(response.as_bytes())
+        stream
+            .write_all(response.as_bytes())
             .map_err(|e| format!("Failed to send callback response: {e}"))?;
-        stream.flush().map_err(|e| format!("Failed to flush callback response: {e}"))
+        stream
+            .flush()
+            .map_err(|e| format!("Failed to flush callback response: {e}"))
     }
 }
 
@@ -154,10 +187,18 @@ mod tests {
     #[test]
     fn receives_valid_authorization_callback() {
         let server = CallbackServer::bind().unwrap();
-        let address = server.redirect_uri().trim_start_matches("http://").trim_end_matches('/').to_string();
+        let address = server
+            .redirect_uri()
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .to_string();
         let handle = thread::spawn(move || server.wait_for_callback("expected-state"));
         let mut stream = TcpStream::connect(address).unwrap();
-        stream.write_all(b"GET /?code=sample-code&state=expected-state HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        stream
+            .write_all(
+                b"GET /?code=sample-code&state=expected-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            .unwrap();
         let callback = handle.join().unwrap().unwrap();
         assert_eq!(callback.code, "sample-code");
     }
@@ -165,13 +206,21 @@ mod tests {
     #[test]
     fn rejects_wrong_state_and_keeps_listener_waiting() {
         let server = CallbackServer::bind().unwrap();
-        let address = server.redirect_uri().trim_start_matches("http://").trim_end_matches('/').to_string();
+        let address = server
+            .redirect_uri()
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .to_string();
         let handle = thread::spawn(move || server.wait_for_callback("expected-state"));
         let mut bad = TcpStream::connect(&address).unwrap();
-        bad.write_all(b"GET /?code=bad-code&state=wrong-state HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        bad.write_all(b"GET /?code=bad-code&state=wrong-state HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
         drop(bad);
         let mut good = TcpStream::connect(&address).unwrap();
-        good.write_all(b"GET /?code=good-code&state=expected-state HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        good.write_all(
+            b"GET /?code=good-code&state=expected-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .unwrap();
         let callback = handle.join().unwrap().unwrap();
         assert_eq!(callback.code, "good-code");
     }

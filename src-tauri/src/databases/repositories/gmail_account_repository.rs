@@ -18,10 +18,7 @@ pub struct GmailAccountRepository;
 impl GmailAccountRepository {
     /// Menambahkan akun Gmail baru.
     /// Email bersifat unik tanpa membedakan huruf besar/kecil.
-    pub fn create(
-        connection: &Connection,
-        email_address: &str,
-    ) -> Result<i64> {
+    pub fn create(connection: &Connection, email_address: &str) -> Result<i64> {
         connection.execute(
             "INSERT INTO gmail_accounts (email_address)
              VALUES (?1)",
@@ -84,10 +81,7 @@ impl GmailAccountRepository {
     }
 
     /// Mengambil satu akun berdasarkan ID.
-    pub fn find_by_id(
-        connection: &Connection,
-        id: i64,
-    ) -> Result<Option<GmailAccount>> {
+    pub fn find_by_id(connection: &Connection, id: i64) -> Result<Option<GmailAccount>> {
         connection
             .query_row(
                 "SELECT
@@ -144,11 +138,7 @@ impl GmailAccountRepository {
     }
 
     /// Memperbarui status koneksi akun.
-    pub fn update_status(
-        connection: &Connection,
-        id: i64,
-        status: &str,
-    ) -> Result<bool> {
+    pub fn update_status(connection: &Connection, id: i64, status: &str) -> Result<bool> {
         let affected = connection.execute(
             "UPDATE gmail_accounts
              SET account_status = ?1,
@@ -162,10 +152,7 @@ impl GmailAccountRepository {
 
     /// Menghapus referensi token setelah token dihapus
     /// dari secure storage oleh modul autentikasi.
-    pub fn clear_token_reference(
-        connection: &Connection,
-        id: i64,
-    ) -> Result<bool> {
+    pub fn clear_token_reference(connection: &Connection, id: i64) -> Result<bool> {
         let affected = connection.execute(
             "UPDATE gmail_accounts
              SET encrypted_token_reference = NULL,
@@ -213,18 +200,11 @@ mod tests {
     fn creates_gmail_account() {
         let connection = setup();
 
-        let id = GmailAccountRepository::create(
-            &connection,
-            "test@gmail.com",
-        )
-        .unwrap();
+        let id = GmailAccountRepository::create(&connection, "test@gmail.com").unwrap();
 
-        let account = GmailAccountRepository::find_by_id(
-            &connection,
-            id,
-        )
-        .unwrap()
-        .unwrap();
+        let account = GmailAccountRepository::find_by_id(&connection, id)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(account.email_address, "test@gmail.com");
         assert_eq!(account.account_status, "disconnected");
@@ -234,16 +214,9 @@ mod tests {
     fn rejects_duplicate_email_address() {
         let connection = setup();
 
-        GmailAccountRepository::create(
-            &connection,
-            "test@gmail.com",
-        )
-        .unwrap();
+        GmailAccountRepository::create(&connection, "test@gmail.com").unwrap();
 
-        let result = GmailAccountRepository::create(
-            &connection,
-            "TEST@gmail.com",
-        );
+        let result = GmailAccountRepository::create(&connection, "TEST@gmail.com");
 
         assert!(result.is_err());
     }
@@ -258,14 +231,19 @@ mod tests {
             &connection,
             "TEST@gmail.com",
             "gmail-refresh-token:test-reference",
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(id, updated_id);
-        let account = GmailAccountRepository::find_by_id(&connection, id).unwrap().unwrap();
+        let account = GmailAccountRepository::find_by_id(&connection, id)
+            .unwrap()
+            .unwrap();
         assert_eq!(account.account_status, "connected");
         assert_eq!(account.sync_start_date.as_deref(), Some("2026-11-01"));
         assert_eq!(
-            GmailAccountRepository::find_token_reference(&connection, id).unwrap().as_deref(),
+            GmailAccountRepository::find_token_reference(&connection, id)
+                .unwrap()
+                .as_deref(),
             Some("gmail-refresh-token:test-reference"),
         );
     }
@@ -274,20 +252,11 @@ mod tests {
     fn finds_all_gmail_accounts() {
         let connection = setup();
 
-        GmailAccountRepository::create(
-            &connection,
-            "first@gmail.com",
-        )
-        .unwrap();
+        GmailAccountRepository::create(&connection, "first@gmail.com").unwrap();
 
-        GmailAccountRepository::create(
-            &connection,
-            "second@gmail.com",
-        )
-        .unwrap();
+        GmailAccountRepository::create(&connection, "second@gmail.com").unwrap();
 
-        let accounts =
-            GmailAccountRepository::find_all(&connection).unwrap();
+        let accounts = GmailAccountRepository::find_all(&connection).unwrap();
 
         assert_eq!(accounts.len(), 2);
     }
@@ -296,46 +265,25 @@ mod tests {
     fn updates_sync_start_date() {
         let connection = setup();
 
-        let id = GmailAccountRepository::create(
-            &connection,
-            "test@gmail.com",
-        )
-        .unwrap();
+        let id = GmailAccountRepository::create(&connection, "test@gmail.com").unwrap();
 
         let updated =
-            GmailAccountRepository::update_sync_start_date(
-                &connection,
-                id,
-                "2026-11-01",
-            )
-            .unwrap();
+            GmailAccountRepository::update_sync_start_date(&connection, id, "2026-11-01").unwrap();
 
         assert!(updated);
 
-        let account = GmailAccountRepository::find_by_id(
-            &connection,
-            id,
-        )
-        .unwrap()
-        .unwrap();
+        let account = GmailAccountRepository::find_by_id(&connection, id)
+            .unwrap()
+            .unwrap();
 
-        assert_eq!(
-            account.sync_start_date.as_deref(),
-            Some("2026-11-01")
-        );
+        assert_eq!(account.sync_start_date.as_deref(), Some("2026-11-01"));
     }
 
     #[test]
     fn returns_false_when_account_does_not_exist() {
         let connection = setup();
 
-        let updated =
-            GmailAccountRepository::update_status(
-                &connection,
-                999,
-                "connected",
-            )
-            .unwrap();
+        let updated = GmailAccountRepository::update_status(&connection, 999, "connected").unwrap();
 
         assert!(!updated);
     }

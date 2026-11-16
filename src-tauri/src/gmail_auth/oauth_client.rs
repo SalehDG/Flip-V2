@@ -1,15 +1,6 @@
 use oauth2::{
-    basic::BasicClient,
-    AuthType,
-    AuthUrl,
-    ClientId,
-    ClientSecret,
-    CsrfToken,
-    PkceCodeChallenge,
-    PkceCodeVerifier,
-    RedirectUrl,
-    Scope,
-    TokenUrl,
+    AuthType, AuthUrl, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, PkceCodeVerifier,
+    RedirectUrl, Scope, TokenUrl, basic::BasicClient,
 };
 use serde::Deserialize;
 use std::{fs, path::Path};
@@ -30,8 +21,8 @@ pub struct InstalledConfig {
 
 impl GoogleOAuthConfig {
     pub fn load(path: &Path) -> Result<Self, String> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read OAuth config: {e}"))?;
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("Failed to read OAuth config: {e}"))?;
         let config: Self = serde_json::from_str(&content)
             .map_err(|e| format!("Invalid OAuth config JSON: {e}"))?;
 
@@ -109,16 +100,19 @@ mod tests {
 
     #[test]
     fn creates_authorization_url_with_pkce_and_readonly_scope() {
-        let prepared = build_authorization_url(
-            &test_config(),
-            "http://127.0.0.1:49152/",
-        ).unwrap();
+        let prepared = build_authorization_url(&test_config(), "http://127.0.0.1:49152/").unwrap();
         let url = Url::parse(&prepared.authorization_url).unwrap();
         let params: HashMap<_, _> = url.query_pairs().into_owned().collect();
 
         assert_eq!(params.get("client_id").unwrap(), "test-client-id");
-        assert_eq!(params.get("redirect_uri").unwrap(), "http://127.0.0.1:49152/");
-        assert_eq!(params.get("scope").unwrap(), "https://www.googleapis.com/auth/gmail.readonly");
+        assert_eq!(
+            params.get("redirect_uri").unwrap(),
+            "http://127.0.0.1:49152/"
+        );
+        assert_eq!(
+            params.get("scope").unwrap(),
+            "https://www.googleapis.com/auth/gmail.readonly"
+        );
         assert_eq!(params.get("access_type").unwrap(), "offline");
         assert_eq!(params.get("code_challenge_method").unwrap(), "S256");
         assert!(params.contains_key("code_challenge"));

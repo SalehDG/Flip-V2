@@ -1,16 +1,16 @@
 use crate::databases::{
-    repositories::gmail_account_repository::{GmailAccount, GmailAccountRepository},
     Database,
+    repositories::gmail_account_repository::{GmailAccount, GmailAccountRepository},
 };
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use std::{path::Path, sync::Mutex};
-use rusqlite::OptionalExtension;
 use tauri::State;
 use uuid::Uuid;
 
 use super::{
     callback_server::CallbackServer,
-    oauth_client::{build_authorization_url, GoogleOAuthConfig},
+    oauth_client::{GoogleOAuthConfig, build_authorization_url},
     token_storage,
 };
 
@@ -45,13 +45,14 @@ struct GmailProfile {
 }
 
 fn oauth_config_path() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../secrets/oauth-client.json")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../secrets/oauth-client.json")
 }
 
 #[tauri::command]
 pub fn start_gmail_oauth(store: State<'_, OAuthSessionStore>) -> Result<String, String> {
-    let mut pending_slot = store.pending.lock()
+    let mut pending_slot = store
+        .pending
+        .lock()
         .map_err(|e| format!("OAuth session lock failed: {e}"))?;
     if pending_slot.is_some() {
         return Err("A Gmail authorization is already in progress".into());
@@ -73,7 +74,9 @@ pub fn start_gmail_oauth(store: State<'_, OAuthSessionStore>) -> Result<String, 
 
 #[tauri::command]
 pub fn cancel_gmail_oauth(store: State<'_, OAuthSessionStore>) -> Result<(), String> {
-    let mut pending = store.pending.lock()
+    let mut pending = store
+        .pending
+        .lock()
         .map_err(|e| format!("OAuth session lock failed: {e}"))?;
     *pending = None;
     Ok(())
@@ -85,15 +88,25 @@ pub async fn complete_gmail_oauth(
     database: State<'_, Database>,
 ) -> Result<GmailAccount, String> {
     let pending = {
-        let mut slot = store.pending.lock()
+        let mut slot = store
+            .pending
+            .lock()
             .map_err(|e| format!("OAuth session lock failed: {e}"))?;
-        slot.take().ok_or_else(|| "No active Gmail authorization session".to_string())?
+        slot.take()
+            .ok_or_else(|| "No active Gmail authorization session".to_string())?
     };
 
-    let PendingOAuth { callback_server, expected_state, pkce_verifier, redirect_uri } = pending;
+    let PendingOAuth {
+        callback_server,
+        expected_state,
+        pkce_verifier,
+        redirect_uri,
+    } = pending;
     let callback = tauri::async_runtime::spawn_blocking(move || {
         callback_server.wait_for_callback(&expected_state)
-    }).await.map_err(|e| format!("Callback worker failed: {e}"))??;
+    })
+    .await
+    .map_err(|e| format!("Callback worker failed: {e}"))??;
 
     let config = GoogleOAuthConfig::load(&oauth_config_path())?;
     let http = reqwest::Client::new();
@@ -107,12 +120,16 @@ pub async fn complete_gmail_oauth(
             ("client_secret", config.installed.client_secret.as_str()),
             ("code_verifier", pkce_verifier.as_str()),
         ])
-        .send().await
+        .send()
+        .await
         .map_err(|e| format!("Failed to contact Google token endpoint: {e}"))?;
 
-    let token_response = token_response.error_for_status()
+    let token_response = token_response
+        .error_for_status()
         .map_err(|e| format!("Google rejected the authorization code: {e}"))?;
-    let tokens: GoogleTokenResponse = token_response.json().await
+    let tokens: GoogleTokenResponse = token_response
+        .json()
+        .await
         .map_err(|e| format!("Invalid Google token response: {e}"))?;
 
     let refresh_token = tokens.refresh_token
@@ -124,11 +141,14 @@ pub async fn complete_gmail_oauth(
     let profile_response = http
         .get("https://gmail.googleapis.com/gmail/v1/users/me/profile")
         .bearer_auth(&tokens.access_token)
-        .send().await
+        .send()
+        .await
         .map_err(|e| format!("Failed to retrieve Gmail profile: {e}"))?
         .error_for_status()
         .map_err(|e| format!("Gmail profile request failed: {e}"))?;
-    let profile: GmailProfile = profile_response.json().await
+    let profile: GmailProfile = profile_response
+        .json()
+        .await
         .map_err(|e| format!("Invalid Gmail profile response: {e}"))?;
 
     if profile.email_address.trim().is_empty() {
@@ -137,13 +157,18 @@ pub async fn complete_gmail_oauth(
 
     // Keep the previous credential until the new reference has been committed.
     let previous_reference = {
-        let connection = database.connection.lock()
+        let connection = database
+            .connection
+            .lock()
             .map_err(|e| format!("Database lock failed: {e}"))?;
-        let existing_id = connection.query_row(
-            "SELECT id FROM gmail_accounts WHERE email_address = ?1 COLLATE NOCASE",
-            [&profile.email_address],
-            |row| row.get::<_, i64>(0),
-        ).optional().map_err(|e| format!("Failed to inspect existing Gmail account: {e}"))?;
+        let existing_id = connection
+            .query_row(
+                "SELECT id FROM gmail_accounts WHERE email_address = ?1 COLLATE NOCASE",
+                [&profile.email_address],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|e| format!("Failed to inspect existing Gmail account: {e}"))?;
         match existing_id {
             Some(id) => GmailAccountRepository::find_token_reference(&connection, id)
                 .map_err(|e| format!("Failed to read previous token reference: {e}"))?,
@@ -155,13 +180,16 @@ pub async fn complete_gmail_oauth(
     token_storage::store_refresh_token(&token_reference, &refresh_token)?;
 
     let account_result = {
-        let connection = database.connection.lock()
+        let connection = database
+            .connection
+            .lock()
             .map_err(|e| format!("Database lock failed: {e}"))?;
         GmailAccountRepository::upsert_connected_account(
             &connection,
             &profile.email_address,
             &token_reference,
-        ).and_then(|id| {
+        )
+        .and_then(|id| {
             GmailAccountRepository::find_by_id(&connection, id)?
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)
         })
@@ -188,7 +216,9 @@ pub fn disconnect_gmail_account(
     account_id: i64,
     database: State<'_, Database>,
 ) -> Result<bool, String> {
-    let connection = database.connection.lock()
+    let connection = database
+        .connection
+        .lock()
         .map_err(|e| format!("Database lock failed: {e}"))?;
     let token_reference = GmailAccountRepository::find_token_reference(&connection, account_id)
         .map_err(|e| format!("Failed to read Gmail token reference: {e}"))?;

@@ -1,12 +1,8 @@
-pub mod repositories;
 pub(crate) mod migrations;
+pub mod repositories;
 
 use rusqlite::Connection;
-use std::{
-    path::Path,
-    sync::Mutex,
-    time::Duration,
-};
+use std::{path::Path, sync::Mutex, time::Duration};
 
 pub struct Database {
     pub connection: Mutex<Connection>,

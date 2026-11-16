@@ -1,17 +1,12 @@
 use tauri::State;
 
 use crate::databases::{
-    repositories::gmail_account_repository::{
-        GmailAccount,
-        GmailAccountRepository,
-    },
     Database,
+    repositories::gmail_account_repository::{GmailAccount, GmailAccountRepository},
 };
 
 #[tauri::command]
-pub fn get_gmail_accounts(
-    database: State<'_, Database>,
-) -> Result<Vec<GmailAccount>, String> {
+pub fn get_gmail_accounts(database: State<'_, Database>) -> Result<Vec<GmailAccount>, String> {
     let connection = database
         .connection
         .lock()
@@ -32,10 +27,6 @@ pub fn update_sync_start_date(
         .lock()
         .map_err(|error| format!("Database lock failed: {error}"))?;
 
-    GmailAccountRepository::update_sync_start_date(
-        &connection,
-        account_id,
-        &start_date,
-    )
-    .map_err(|error| format!("Failed to update sync start date: {error}"))
+    GmailAccountRepository::update_sync_start_date(&connection, account_id, &start_date)
+        .map_err(|error| format!("Failed to update sync start date: {error}"))
 }

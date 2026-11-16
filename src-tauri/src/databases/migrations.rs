@@ -1,14 +1,9 @@
-
 use rusqlite::{Connection, Result};
 
-const CURRENT_VERSION: i64 = 1;
+const CURRENT_VERSION: i64 = 2;
 
 pub fn run(connection: &mut Connection) -> Result<()> {
-    let version: i64 = connection.pragma_query_value(
-        None,
-        "user_version",
-        |row| row.get(0),
-    )?;
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
 
     if version < 1 {
         let transaction = connection.transaction()?;
@@ -110,11 +105,72 @@ pub fn run(connection: &mut Connection) -> Result<()> {
                 setting_value TEXT NOT NULL,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
-            "
+            ",
         )?;
 
         transaction.pragma_update(None, "user_version", 1)?;
 
+        transaction.commit()?;
+    }
+
+    if version < 2 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "
+            CREATE TABLE gmail_sync_state (
+                gmail_account_id INTEGER PRIMARY KEY,
+                sync_status TEXT NOT NULL DEFAULT 'idle',
+                sync_start_date TEXT,
+                page_token TEXT,
+                initial_history_id TEXT,
+                last_error TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (gmail_account_id) REFERENCES gmail_accounts(id) ON DELETE CASCADE,
+                CHECK (sync_status IN ('idle', 'initial_sync', 'completed', 'failed', 'authentication_required'))
+            );
+
+            CREATE TABLE gmail_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gmail_account_id INTEGER NOT NULL,
+                gmail_message_id TEXT NOT NULL,
+                gmail_thread_id TEXT NOT NULL,
+                history_id TEXT,
+                internal_date TEXT,
+                sender TEXT,
+                subject TEXT,
+                snippet TEXT,
+                payload_json TEXT NOT NULL,
+                retrieved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (gmail_account_id) REFERENCES gmail_accounts(id) ON DELETE CASCADE,
+                UNIQUE (gmail_account_id, gmail_message_id)
+            );
+
+            CREATE INDEX idx_gmail_messages_thread
+                ON gmail_messages(gmail_account_id, gmail_thread_id);
+
+            CREATE TABLE gmail_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gmail_account_id INTEGER NOT NULL,
+                gmail_message_id TEXT NOT NULL,
+                part_key TEXT NOT NULL,
+                attachment_id TEXT,
+                filename TEXT,
+                declared_mime_type TEXT,
+                detected_format TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (gmail_account_id, gmail_message_id)
+                    REFERENCES gmail_messages(gmail_account_id, gmail_message_id) ON DELETE CASCADE,
+                UNIQUE (gmail_account_id, gmail_message_id, part_key)
+            );
+
+            CREATE INDEX idx_gmail_attachments_message
+                ON gmail_attachments(gmail_account_id, gmail_message_id);
+            "
+        )?;
+        transaction.pragma_update(None, "user_version", 2)?;
         transaction.commit()?;
     }
 
@@ -124,7 +180,6 @@ pub fn run(connection: &mut Connection) -> Result<()> {
 
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -144,14 +199,14 @@ mod tests {
     }
 
     #[test]
-    fn migration_sets_database_version_to_one() {
+    fn migration_sets_database_version_to_two() {
         let connection = create_test_database();
 
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
 
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[test]
@@ -164,6 +219,9 @@ mod tests {
             "correction_history",
             "processing_logs",
             "app_settings",
+            "gmail_sync_state",
+            "gmail_messages",
+            "gmail_attachments",
         ];
 
         for table in tables {
@@ -194,7 +252,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
 
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[test]
@@ -245,5 +303,3 @@ mod tests {
         assert!(duplicate.is_err());
     }
 }
-
-
