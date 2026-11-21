@@ -38,6 +38,7 @@ pub fn run() {
             greet,
             commands::gmail_account_commands::get_gmail_accounts,
             commands::gmail_account_commands::update_sync_start_date,
+            commands::gmail_history_commands::get_gmail_history,
             gmail_auth::oauth_session::start_gmail_oauth,
             gmail_auth::oauth_session::complete_gmail_oauth,
             gmail_auth::oauth_session::cancel_gmail_oauth,
