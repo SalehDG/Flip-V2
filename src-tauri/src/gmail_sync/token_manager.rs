@@ -1,25 +1,30 @@
 use crate::gmail_auth::{oauth_client::GoogleOAuthConfig, token_storage};
 use serde::Deserialize;
-use std::path::Path;
+use std::time::Duration;
+use tauri::AppHandle;
 
 #[derive(Debug, Clone)]
 pub struct AccessToken {
     pub value: String,
-    pub expires_in: u64,
 }
 
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
-    expires_in: Option<u64>,
     token_type: Option<String>,
 }
 
-pub async fn refresh_access_token(token_reference: &str) -> Result<AccessToken, String> {
+pub async fn refresh_access_token(
+    app: &AppHandle,
+    token_reference: &str,
+) -> Result<AccessToken, String> {
     let refresh_token = token_storage::get_refresh_token(token_reference)?;
-    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../secrets/oauth-client.json");
-    let config = GoogleOAuthConfig::load(&config_path)?;
-    let response = reqwest::Client::new()
+    let config = GoogleOAuthConfig::load_for_app(app)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("Cannot initialize Google token client: {error}"))?;
+    let response = client
         .post(&config.installed.token_uri)
         .form(&[
             ("client_id", config.installed.client_id.as_str()),
@@ -49,6 +54,5 @@ pub async fn refresh_access_token(token_reference: &str) -> Result<AccessToken, 
     }
     Ok(AccessToken {
         value: token.access_token,
-        expires_in: token.expires_in.unwrap_or(3600),
     })
 }

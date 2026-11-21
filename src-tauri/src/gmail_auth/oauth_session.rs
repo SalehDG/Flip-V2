@@ -1,11 +1,15 @@
-use crate::databases::{
-    Database,
-    repositories::gmail_account_repository::{GmailAccount, GmailAccountRepository},
+use crate::{
+    databases::{
+        Database,
+        repositories::gmail_account_repository::{GmailAccount, GmailAccountRepository},
+    },
+    gmail_sync::SyncCoordinator,
 };
 use rusqlite::OptionalExtension;
 use serde::Deserialize;
-use std::{path::Path, sync::Mutex};
-use tauri::State;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use super::{
@@ -21,11 +25,13 @@ struct PendingOAuth {
     expected_state: String,
     pkce_verifier: String,
     redirect_uri: String,
+    cancel_signal: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
 pub struct OAuthSessionStore {
     pending: Mutex<Option<PendingOAuth>>,
+    cancel_signal: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 #[derive(Deserialize)]
@@ -44,12 +50,11 @@ struct GmailProfile {
     email_address: String,
 }
 
-fn oauth_config_path() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../secrets/oauth-client.json")
-}
-
 #[tauri::command]
-pub fn start_gmail_oauth(store: State<'_, OAuthSessionStore>) -> Result<String, String> {
+pub fn start_gmail_oauth(
+    app: AppHandle,
+    store: State<'_, OAuthSessionStore>,
+) -> Result<String, String> {
     let mut pending_slot = store
         .pending
         .lock()
@@ -58,16 +63,23 @@ pub fn start_gmail_oauth(store: State<'_, OAuthSessionStore>) -> Result<String, 
         return Err("A Gmail authorization is already in progress".into());
     }
 
-    let config = GoogleOAuthConfig::load(&oauth_config_path())?;
+    let config = GoogleOAuthConfig::load_for_app(&app)?;
     let callback_server = CallbackServer::bind()?;
     let redirect_uri = callback_server.redirect_uri().to_string();
     let prepared = build_authorization_url(&config, &redirect_uri)?;
+
+    let cancel_signal = Arc::new(AtomicBool::new(false));
+    *store
+        .cancel_signal
+        .lock()
+        .map_err(|e| format!("OAuth cancellation lock failed: {e}"))? = Some(cancel_signal.clone());
 
     *pending_slot = Some(PendingOAuth {
         callback_server,
         expected_state: prepared.state.secret().to_string(),
         pkce_verifier: prepared.pkce_verifier.secret().to_string(),
         redirect_uri,
+        cancel_signal,
     });
     Ok(prepared.authorization_url)
 }
@@ -79,11 +91,20 @@ pub fn cancel_gmail_oauth(store: State<'_, OAuthSessionStore>) -> Result<(), Str
         .lock()
         .map_err(|e| format!("OAuth session lock failed: {e}"))?;
     *pending = None;
+    if let Some(signal) = store
+        .cancel_signal
+        .lock()
+        .map_err(|e| format!("OAuth cancellation lock failed: {e}"))?
+        .as_ref()
+    {
+        signal.store(true, Ordering::Release);
+    }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn complete_gmail_oauth(
+    app: AppHandle,
     store: State<'_, OAuthSessionStore>,
     database: State<'_, Database>,
 ) -> Result<GmailAccount, String> {
@@ -101,14 +122,15 @@ pub async fn complete_gmail_oauth(
         expected_state,
         pkce_verifier,
         redirect_uri,
+        cancel_signal,
     } = pending;
     let callback = tauri::async_runtime::spawn_blocking(move || {
-        callback_server.wait_for_callback(&expected_state)
+        callback_server.wait_for_callback(&expected_state, cancel_signal)
     })
     .await
     .map_err(|e| format!("Callback worker failed: {e}"))??;
 
-    let config = GoogleOAuthConfig::load(&oauth_config_path())?;
+    let config = GoogleOAuthConfig::load_for_app(&app)?;
     let http = reqwest::Client::new();
     let token_response = http
         .post(&config.installed.token_uri)
@@ -215,7 +237,9 @@ pub async fn complete_gmail_oauth(
 pub fn disconnect_gmail_account(
     account_id: i64,
     database: State<'_, Database>,
+    coordinator: State<'_, SyncCoordinator>,
 ) -> Result<bool, String> {
+    let _permit = coordinator.try_acquire(account_id)?;
     let connection = database
         .connection
         .lock()

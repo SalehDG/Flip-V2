@@ -5,6 +5,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use url::Url;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -34,13 +36,20 @@ impl CallbackServer {
         &self.redirect_uri
     }
 
-    pub fn wait_for_callback(self, expected_state: &str) -> Result<AuthorizationCallback, String> {
+    pub fn wait_for_callback(
+        self,
+        expected_state: &str,
+        cancel_signal: Arc<AtomicBool>,
+    ) -> Result<AuthorizationCallback, String> {
         self.listener
             .set_nonblocking(true)
             .map_err(|e| format!("Failed to configure callback listener: {e}"))?;
         let deadline = Instant::now() + Duration::from_secs(300);
 
         loop {
+            if cancel_signal.load(Ordering::Acquire) {
+                return Err("Google authorization was cancelled".into());
+            }
             if Instant::now() >= deadline {
                 return Err("Google authorization timed out after 5 minutes".into());
             }
@@ -192,7 +201,7 @@ mod tests {
             .trim_start_matches("http://")
             .trim_end_matches('/')
             .to_string();
-        let handle = thread::spawn(move || server.wait_for_callback("expected-state"));
+        let handle = thread::spawn(move || server.wait_for_callback("expected-state", Arc::new(AtomicBool::new(false))));
         let mut stream = TcpStream::connect(address).unwrap();
         stream
             .write_all(
@@ -211,7 +220,7 @@ mod tests {
             .trim_start_matches("http://")
             .trim_end_matches('/')
             .to_string();
-        let handle = thread::spawn(move || server.wait_for_callback("expected-state"));
+        let handle = thread::spawn(move || server.wait_for_callback("expected-state", Arc::new(AtomicBool::new(false))));
         let mut bad = TcpStream::connect(&address).unwrap();
         bad.write_all(b"GET /?code=bad-code&state=wrong-state HTTP/1.1\r\nHost: localhost\r\n\r\n")
             .unwrap();

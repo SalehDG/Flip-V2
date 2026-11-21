@@ -18,6 +18,7 @@ pub struct GmailAccountRepository;
 impl GmailAccountRepository {
     /// Menambahkan akun Gmail baru.
     /// Email bersifat unik tanpa membedakan huruf besar/kecil.
+    #[allow(dead_code)]
     pub fn create(connection: &Connection, email_address: &str) -> Result<i64> {
         connection.execute(
             "INSERT INTO gmail_accounts (email_address)
@@ -119,6 +120,7 @@ impl GmailAccountRepository {
     }
 
     /// Memperbarui informasi sinkronisasi akun.
+    #[allow(dead_code)]
     pub fn update_sync_state(
         connection: &Connection,
         id: i64,
@@ -138,6 +140,7 @@ impl GmailAccountRepository {
     }
 
     /// Memperbarui status koneksi akun.
+    #[allow(dead_code)]
     pub fn update_status(connection: &Connection, id: i64, status: &str) -> Result<bool> {
         let affected = connection.execute(
             "UPDATE gmail_accounts

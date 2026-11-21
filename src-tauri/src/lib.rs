@@ -30,6 +30,7 @@ pub fn run() {
             // Simpan koneksi sebagai state aplikasi.
             app.manage(database);
             app.manage(gmail_auth::oauth_session::OAuthSessionStore::default());
+            app.manage(gmail_sync::SyncCoordinator::default());
 
             Ok(())
         })
@@ -42,6 +43,7 @@ pub fn run() {
             gmail_auth::oauth_session::cancel_gmail_oauth,
             gmail_auth::oauth_session::disconnect_gmail_account,
             gmail_sync::service::start_initial_gmail_sync,
+            gmail_sync::service::start_incremental_gmail_sync,
             gmail_sync::service::get_gmail_sync_state,
         ])
         .run(tauri::generate_context!())

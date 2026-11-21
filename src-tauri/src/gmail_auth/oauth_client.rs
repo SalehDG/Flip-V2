@@ -3,7 +3,11 @@ use oauth2::{
     RedirectUrl, Scope, TokenUrl, basic::BasicClient,
 };
 use serde::Deserialize;
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Deserialize)]
 pub struct GoogleOAuthConfig {
@@ -16,6 +20,7 @@ pub struct InstalledConfig {
     pub client_secret: String,
     pub auth_uri: String,
     pub token_uri: String,
+    #[allow(dead_code)]
     pub redirect_uris: Vec<String>,
 }
 
@@ -33,6 +38,44 @@ impl GoogleOAuthConfig {
             return Err("OAuth configuration is incomplete".to_string());
         }
         Ok(config)
+    }
+
+    /// Resolve OAuth credentials in a development- and production-safe location.
+    ///
+    /// Production users place oauth-client.json in the application's config directory.
+    /// Bundled resources and the development secret path are supported as fallbacks.
+    pub fn load_for_app(app: &AppHandle) -> Result<Self, String> {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+
+        if let Ok(path) = app.path().app_config_dir() {
+            candidates.push(path.join("oauth-client.json"));
+        }
+        if let Ok(path) = app.path().resource_dir() {
+            candidates.push(path.join("secrets").join("oauth-client.json"));
+            candidates.push(path.join("oauth-client.json"));
+        }
+        candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../secrets/oauth-client.json"));
+
+        for path in candidates {
+            if path.is_file() {
+                return Self::load(&path).map_err(|error| {
+                    format!(
+                        "OAuth config ditemukan di {} tetapi tidak valid: {error}",
+                        path.display()
+                    )
+                });
+            }
+        }
+
+        let config_dir = app
+            .path()
+            .app_config_dir()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "direktori konfigurasi aplikasi".into());
+
+        Err(format!(
+            "File OAuth belum ditemukan. Letakkan oauth-client.json di: {config_dir}"
+        ))
     }
 }
 

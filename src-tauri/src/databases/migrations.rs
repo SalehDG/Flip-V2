@@ -1,6 +1,6 @@
 use rusqlite::{Connection, Result};
 
-const CURRENT_VERSION: i64 = 2;
+const CURRENT_VERSION: i64 = 3;
 
 pub fn run(connection: &mut Connection) -> Result<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -174,6 +174,61 @@ pub fn run(connection: &mut Connection) -> Result<()> {
         transaction.commit()?;
     }
 
+    if version < 3 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "
+            ALTER TABLE gmail_sync_state RENAME TO gmail_sync_state_v2;
+
+            CREATE TABLE gmail_sync_state (
+                gmail_account_id INTEGER PRIMARY KEY,
+                sync_status TEXT NOT NULL DEFAULT 'idle',
+                sync_start_date TEXT,
+                page_token TEXT,
+                initial_history_id TEXT,
+                latest_history_id TEXT,
+                last_error TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (gmail_account_id) REFERENCES gmail_accounts(id) ON DELETE CASCADE,
+                CHECK (sync_status IN (
+                    'idle',
+                    'initial_sync',
+                    'incremental_sync',
+                    'completed',
+                    'failed',
+                    'authentication_required'
+                ))
+            );
+
+            INSERT INTO gmail_sync_state (
+                gmail_account_id,
+                sync_status,
+                sync_start_date,
+                page_token,
+                initial_history_id,
+                last_error,
+                updated_at
+            )
+            SELECT
+                gmail_account_id,
+                sync_status,
+                sync_start_date,
+                page_token,
+                initial_history_id,
+                last_error,
+                updated_at
+            FROM gmail_sync_state_v2;
+
+            DROP TABLE gmail_sync_state_v2;
+
+            CREATE INDEX IF NOT EXISTS idx_gmail_messages_account_history
+                ON gmail_messages(gmail_account_id, history_id);
+            ",
+        )?;
+        transaction.pragma_update(None, "user_version", 3)?;
+        transaction.commit()?;
+    }
+
     if version > CURRENT_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
     }
@@ -199,14 +254,14 @@ mod tests {
     }
 
     #[test]
-    fn migration_sets_database_version_to_two() {
+    fn migration_sets_database_version_to_three() {
         let connection = create_test_database();
 
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
 
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[test]
@@ -252,7 +307,26 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
 
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
+    }
+
+    #[test]
+    fn incremental_sync_status_is_allowed_after_migration() {
+        let connection = create_test_database();
+        connection
+            .execute(
+                "INSERT INTO gmail_accounts (email_address) VALUES ('sync@gmail.com')",
+                [],
+            )
+            .unwrap();
+
+        let result = connection.execute(
+            "INSERT INTO gmail_sync_state (gmail_account_id, sync_status)
+             VALUES (1, 'incremental_sync')",
+            [],
+        );
+
+        assert!(result.is_ok());
     }
 
     #[test]
