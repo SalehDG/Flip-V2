@@ -16,6 +16,7 @@ use super::email_parser::parse_flip_email;
 
 const MAX_AUTOMATIC_ATTEMPTS: i64 = 3;
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+const JPEG_SIGNATURE: &[u8; 3] = b"\xFF\xD8\xFF";
 const EXTRACTION_EVENT: &str = "flip://extraction-progress";
 const EXTRACTION_SUMMARY_EVENT: &str = "flip://extraction-summary";
 
@@ -335,13 +336,13 @@ fn process_one(
 
     let attachments = local_png_attachments(database, item.account_id, &item.message_id)?;
     if attachments.len() != 1 {
-        let reason = if attachments.is_empty() { "Lampiran PNG invoice tidak ditemukan." } else { "Lebih dari satu attachment PNG ditemukan; perlu pemeriksaan manual." };
+        let reason = if attachments.is_empty() { "Lampiran gambar invoice (PNG/JPEG) tidak ditemukan." } else { "Lebih dari satu attachment gambar invoice ditemukan; perlu pemeriksaan manual." };
         let status = finish_review(database, &item, parsed.transaction_id.as_deref(), parsed.transaction_date.as_deref(), parsed.recipient_name.as_deref(), parsed.amount, None, Some(reason), None, app)?;
         return Ok(Some(status));
     }
     let image_path = &attachments[0];
-    if let Err(error) = validate_png_file(image_path) {
-        let reason = format!("Attachment PNG tidak valid atau tidak dapat dibaca: {error}");
+    if let Err(error) = validate_image_file(image_path) {
+        let reason = format!("Attachment gambar tidak valid atau tidak dapat dibaca: {error}");
         let status = finish_review(database, &item, parsed.transaction_id.as_deref(), parsed.transaction_date.as_deref(), parsed.recipient_name.as_deref(), parsed.amount, Some(image_path), Some(&reason), Some(&reason), app)?;
         return Ok(Some(status));
     }
@@ -412,14 +413,17 @@ fn save_parsed_fields(database: &Database, id: i64, parsed: &super::email_parser
 }
 
 
-fn validate_png_file(path: &str) -> Result<(), String> {
+fn validate_image_file(path: &str) -> Result<(), String> {
     let mut file = File::open(path).map_err(|error| error.to_string())?;
     let mut signature = [0u8; 8];
-    file.read_exact(&mut signature).map_err(|error| error.to_string())?;
-    if &signature != PNG_SIGNATURE {
-        return Err("signature file bukan PNG".into());
+    let read = file.read(&mut signature).map_err(|error| error.to_string())?;
+    if read >= PNG_SIGNATURE.len() && &signature == PNG_SIGNATURE {
+        return Ok(());
     }
-    Ok(())
+    if read >= JPEG_SIGNATURE.len() && &signature[..JPEG_SIGNATURE.len()] == JPEG_SIGNATURE {
+        return Ok(());
+    }
+    Err("signature file bukan PNG atau JPEG yang valid".into())
 }
 
 
@@ -427,7 +431,8 @@ fn local_png_attachments(database: &Database, account_id: i64, message_id: &str)
     let connection = database.connection.lock().map_err(lock_err)?;
     let mut statement = connection.prepare(
         "SELECT local_path FROM gmail_attachments
-         WHERE gmail_account_id=?1 AND gmail_message_id=?2 AND detected_format='png'
+         WHERE gmail_account_id=?1 AND gmail_message_id=?2
+           AND detected_format IN ('png','jpeg')
          ORDER BY id ASC",
     ).map_err(db_err)?;
     let rows = statement.query_map(params![account_id, message_id], |row| row.get::<_, String>(0)).map_err(db_err)?;
@@ -637,18 +642,26 @@ fn decode_base64url(value: &str) -> Result<Vec<u8>, String> {
 }
 
 
-fn decoded_email_body(payload: &Value) -> String {
+fn decoded_email_body(message_or_payload: &Value) -> String {
+    // Gmail sync stores the full Message object. MIME data lives under `payload`.
+    // Also accept a raw MIME payload for focused unit tests and other callers.
+    let mime_payload = message_or_payload.get("payload").unwrap_or(message_or_payload);
     let mut plain = Vec::new();
     let mut html = Vec::new();
-    collect_body_parts(payload, &mut plain, &mut html);
+    collect_body_parts(mime_payload, &mut plain, &mut html);
     if !plain.is_empty() { plain.join("\n") } else { html.join("\n") }
 }
 
 
 fn collect_body_parts(value: &Value, plain: &mut Vec<String>, html: &mut Vec<String>) {
     let mime = value.get("mimeType").and_then(Value::as_str).unwrap_or_default();
+    // Gmail includes `body.attachmentId: null` on ordinary body parts in some
+    // payloads. Presence of the key alone must not classify the body as an attachment.
+    let has_attachment_id = value.pointer("/body/attachmentId")
+        .and_then(Value::as_str)
+        .is_some_and(|attachment_id| !attachment_id.trim().is_empty());
     let is_attachment = value.get("filename").and_then(Value::as_str).is_some_and(|name| !name.trim().is_empty())
-        || value.pointer("/body/attachmentId").is_some();
+        || has_attachment_id;
     if is_attachment {
         return;
     }
@@ -688,7 +701,11 @@ fn html_to_text(html: &str) -> String {
                 if trimmed.starts_with("script") { skip_block = Some("script".into()); }
                 if trimmed.starts_with("style") { skip_block = Some("style".into()); }
                 if trimmed.starts_with("/script") || trimmed.starts_with("/style") { skip_block = None; }
-                if ["br", "p", "/p", "div", "/div", "li", "/li", "tr", "/tr", "/td", "/table", "/h1", "/h2", "/h3"].contains(&trimmed.as_str()) {
+                // Keep boundaries between HTML block elements. Flip receipt labels and
+                // values are placed in adjacent divs and must not concatenate.
+                let block_tag = trimmed.trim_start_matches('/');
+                if ["br", "p", "div", "li", "tr", "td", "table", "h1", "h2", "h3"].contains(&block_tag)
+                    && (trimmed.starts_with('/') || !trimmed.ends_with('/')) {
                     output.push('\n');
                 }
             } else if tag_name.len() < 40 { tag_name.push(ch); }
@@ -716,6 +733,61 @@ fn db_err(error: rusqlite::Error) -> String { format!("Database error: {error}")
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flip_receipt_html_preserves_label_value_boundaries() {
+        let html = r#"<div class="section__content__detail"><div>ID Transaksi</div><div>#ST261121135251582SV50K</div></div><div><div>Waktu Terkirim</div><div>21 Nov 2026 13:53 WIB</div></div><div><div>Nama Tujuan</div><div>MUHAMAD ANWAR GUNAWAN</div></div><div><div>Nominal</div><div>Rp18.975.000</div></div>"#;
+        let text = html_to_text(html);
+        let parsed = parse_flip_email(None, &text);
+        assert_eq!(parsed.transaction_id.as_deref(), Some("ST261121135251582SV50K"));
+        assert_eq!(parsed.transaction_date.as_deref(), Some("21/11/2026"));
+        assert_eq!(parsed.recipient_name.as_deref(), Some("MUHAMAD ANWAR GUNAWAN"));
+        assert_eq!(parsed.amount, Some(18_975_000));
+        assert!(parsed.review_reasons.is_empty(), "unexpected review reasons: {:?}", parsed.review_reasons);
+    }
+
+
+    #[test]
+    fn reads_html_body_when_attachment_id_is_null() {
+        let payload = serde_json::json!({
+            "mimeType": "text/html",
+            "body": {
+                "attachmentId": null,
+                "data": "PGRpdj5JRCBUcmFuc2Frc2k8L2Rpdj48ZGl2PiNTVDI2MTEyMTEzNTI1MTU4MlNWNTBLPC9kaXY-PGRpdj5XYWt0dSBUZXJraXJpbTwvZGl2PjxkaXY-MjEgTm92IDIwMjYgMTM6NTMgV0lCPC9kaXY-PGRpdj5OYW1hIFR1anVhbjwvZGl2PjxkaXY-TVVIQU1BRCBBTldBUiBHVU5BV0FOPC9kaXY-PGRpdj5Ob21pbmFsPC9kaXY-PGRpdj5ScDE4Ljk3NS4wMDA8L2Rpdj4"
+            }
+        });
+        let body = decoded_email_body(&payload);
+        let parsed = parse_flip_email(None, &body);
+        assert_eq!(parsed.transaction_id.as_deref(), Some("ST261121135251582SV50K"));
+        assert_eq!(parsed.transaction_date.as_deref(), Some("21/11/2026"));
+        assert_eq!(parsed.recipient_name.as_deref(), Some("MUHAMAD ANWAR GUNAWAN"));
+        assert_eq!(parsed.amount, Some(18_975_000));
+        assert!(parsed.review_reasons.is_empty(), "unexpected review reasons: {:?}", parsed.review_reasons);
+    }
+
+    #[test]
+    fn extracts_body_from_full_gmail_message_envelope() {
+        // Gmail sync stores a full Message object; its MIME tree is nested in payload.
+        let payload = serde_json::json!({
+            "id": "sample-message",
+            "threadId": "sample-thread",
+            "payload": {
+                "mimeType": "text/html",
+                "body": {
+                    "attachmentId": null,
+                    "data": "PGRpdj5JRCBUcmFuc2Frc2k8L2Rpdj48ZGl2PiNTVDI2MTEyMTEzNTI1MTU4MlNWNTBLPC9kaXY-PGRpdj5XYWt0dSBUZXJraXJpbTwvZGl2PjxkaXY-MjEgTm92IDIwMjYgMTM6NTMgV0lCPC9kaXY-PGRpdj5OYW1hIFR1anVhbjwvZGl2PjxkaXY-TVVIQU1BRCBBTldBUiBHVU5BV0FOPC9kaXY-PGRpdj5Ob21pbmFsPC9kaXY-PGRpdj5ScDE4Ljk3NS4wMDA8L2Rpdj4"
+                }
+            }
+        });
+        let body = decoded_email_body(&payload);
+        let parsed = parse_flip_email(None, &body);
+        assert_eq!(parsed.transaction_id.as_deref(), Some("ST261121135251582SV50K"));
+        assert_eq!(parsed.transaction_date.as_deref(), Some("21/11/2026"));
+        assert_eq!(parsed.recipient_name.as_deref(), Some("MUHAMAD ANWAR GUNAWAN"));
+        assert_eq!(parsed.amount, Some(18_975_000));
+        assert!(parsed.review_reasons.is_empty(), "unexpected review reasons: {:?}", parsed.review_reasons);
+    }
+
 
     #[test]
     fn html_conversion_removes_tags_and_script_content() {

@@ -251,16 +251,16 @@ fn collect_parts<'a>(part: &'a MimePart, output: &mut Vec<&'a MimePart>) {
         }
     }
 
-    if part
+    let has_filename = part
         .filename
         .as_deref()
-        .is_some_and(|name| !name.is_empty())
-        || part
-            .body
-            .as_ref()
-            .and_then(|body| body.attachment_id.as_ref())
-            .is_some()
-    {
+        .is_some_and(|name| !name.trim().is_empty());
+    let has_attachment_id = part
+        .body
+        .as_ref()
+        .and_then(|body| body.attachment_id.as_ref())
+        .is_some();
+    if has_filename || has_attachment_id {
         output.push(part);
     }
 }

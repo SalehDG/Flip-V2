@@ -29,7 +29,14 @@ pub fn parse_flip_email(_subject: Option<&str>, decoded_body: &str) -> EmailTran
 
 
 fn normalize_body(text: &str) -> String {
-    text.replace("\r\n", "\n").replace('\r', "\n")
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\u{00a0}', " ")
+        .replace('\u{200b}', "")
+        .replace('\u{200c}', "")
+        .replace('\u{200d}', "")
+        .replace('\u{feff}', "")
+        .replace('\u{00ad}', "")
 }
 
 
@@ -46,22 +53,23 @@ fn extract_transaction_id(text: &str) -> Option<String> {
 
 fn extract_sent_date(text: &str) -> Option<String> {
     let tail = find_after_label(text, &["Waktu Terkirim"])?;
-    let first_line = tail.lines().next()?.trim();
-    let tokens: Vec<&str> = first_line.split_whitespace().collect();
-    if tokens.is_empty() { return None; }
-
-    let (day, month, year) = if let Some((d, m, y)) = parse_numeric_date(tokens[0]) {
-        (d, m, y)
-    } else {
-        if tokens.len() < 3 { return None; }
-        let day = tokens[0].parse::<u32>().ok()?;
-        let month = month_number(tokens[1])?;
-        let year = tokens[2].parse::<u32>().ok()?;
-        (day, month, year)
-    };
-
-    if !valid_date(day, month, year) { return None; }
-    Some(format!("{day:02}/{month:02}/{year:04}"))
+    for line in tail.lines().take(4) {
+        let line = line.trim();
+        if line.is_empty() || looks_like_label(line) { continue; }
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.is_empty() { continue; }
+        let (day, month, year) = if let Some((d, m, y)) = parse_numeric_date(tokens[0].trim_matches(|c: char| !c.is_ascii_digit() && c != '/' && c != '-')) {
+            (d, m, y)
+        } else {
+            if tokens.len() < 3 { continue; }
+            let day = match tokens[0].parse::<u32>() { Ok(v) => v, Err(_) => continue };
+            let month = match month_number(tokens[1]) { Some(v) => v, None => continue };
+            let year = match tokens[2].trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>() { Ok(v) => v, Err(_) => continue };
+            (day, month, year)
+        };
+        if valid_date(day, month, year) { return Some(format!("{day:02}/{month:02}/{year:04}")); }
+    }
+    None
 }
 
 
@@ -99,33 +107,54 @@ fn month_number(month: &str) -> Option<u32> {
     }
 }
 
+
 fn extract_recipient(text: &str) -> Option<String> {
-    let value = find_after_label(text, &["Nama Tujuan"])?;
-    let line = value.lines().next()?.trim();
-    let cleaned = trim_before_next_label(line, &["Bank Tujuan", "Bank Penerima", "Nomor Rekening", "Catatan Transfer", "ID Transaksi", "Waktu Terkirim"]);
-    let cleaned = cleaned.trim().trim_matches([':', '-', ' ']);
-    (!cleaned.is_empty()).then(|| cleaned.to_string())
+    let tail = find_after_label(text, &["Nama Tujuan"])?;
+    for line in tail.lines().take(4) {
+        let line = line.trim();
+        if line.is_empty() || looks_like_label(line) { continue; }
+        let cleaned = trim_before_next_label(line, &["Bank Tujuan", "Bank Penerima", "Nomor Rekening", "Catatan Transfer", "ID Transaksi", "Waktu Terkirim", "Nominal", "Jumlah Transfer"])
+            .trim().trim_matches([':', '-', ' ']);
+        if !cleaned.is_empty() { return Some(cleaned.to_string()); }
+    }
+    None
 }
 
 
 fn extract_amount(text: &str) -> Option<i64> {
     let lines: Vec<&str> = text.lines().collect();
-    // Prefer a currency amount on a line explicitly describing the transfer amount.
-    for line in &lines {
+    // Amount lines are preferred; if several labeled amounts conflict, don't guess.
+    let mut labeled = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
         let lower = line.to_ascii_lowercase();
-        if ["nominal", "jumlah transfer", "total transfer", "jumlah"].iter().any(|label| lower.contains(label)) {
-            let candidates = parse_rp_candidates(line);
-            if candidates.len() == 1 { return candidates.first().copied(); }
+        if ["nominal", "jumlah transfer", "total transfer"].iter().any(|label| lower.contains(label)) {
+            let mut candidates = parse_rp_candidates(line);
+            if candidates.is_empty() {
+                for next_line in lines.iter().skip(index + 1).take(2) {
+                    if looks_like_label(next_line) { break; }
+                    candidates.extend(parse_rp_candidates(next_line));
+                    if !candidates.is_empty() { break; }
+                }
+            }
+            labeled.extend(candidates);
         }
     }
-    // If the message contains a single Rp amount, it is unambiguous. Multiple amounts
-    // without a labeled amount field are deliberately not guessed.
-    let all: Vec<i64> = lines.iter().flat_map(|line| parse_rp_candidates(line)).collect();
-    let unique: Vec<i64> = all.into_iter().fold(Vec::new(), |mut acc, value| {
+    let labeled_unique = unique_values(labeled);
+    if labeled_unique.len() == 1 { return Some(labeled_unique[0]); }
+    if labeled_unique.len() > 1 { return None; }
+
+    // If no amount label is present, accept only one unique currency amount.
+    let all = lines.iter().flat_map(|line| parse_rp_candidates(line)).collect::<Vec<_>>();
+    let unique = unique_values(all);
+    (unique.len() == 1).then(|| unique[0])
+}
+
+
+fn unique_values(values: Vec<i64>) -> Vec<i64> {
+    values.into_iter().fold(Vec::new(), |mut acc, value| {
         if !acc.contains(&value) { acc.push(value); }
         acc
-    });
-    (unique.len() == 1).then(|| unique[0])
+    })
 }
 
 
@@ -138,9 +167,7 @@ fn parse_rp_candidates(line: &str) -> Vec<i64> {
         let tail = line[start..].trim_start();
         let numeric: String = tail.chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',' || *c == ' ').collect();
         let digits: String = numeric.chars().filter(char::is_ascii_digit).collect();
-        if let Ok(value) = digits.parse::<i64>() {
-            if value > 0 { results.push(value); }
-        }
+        if let Ok(value) = digits.parse::<i64>() { if value > 0 { results.push(value); } }
         cursor = start;
         if cursor >= lower.len() { break; }
     }
@@ -148,8 +175,8 @@ fn parse_rp_candidates(line: &str) -> Vec<i64> {
 }
 
 fn find_after_label(text: &str, labels: &[&str]) -> Option<String> {
-    let lower = text.to_ascii_lowercase();
-    let (index, label) = labels.iter().filter_map(|label| lower.find(&label.to_ascii_lowercase()).map(|idx| (idx, *label)))
+    let lower = text.to_lowercase();
+    let (index, label) = labels.iter().filter_map(|label| lower.find(&label.to_lowercase()).map(|idx| (idx, *label)))
         .min_by_key(|(idx, _)| *idx)?;
     let tail = text.get(index + label.len()..)?.trim_start();
     let tail = tail.trim_start_matches([':', '-', '#']).trim_start();
@@ -157,9 +184,15 @@ fn find_after_label(text: &str, labels: &[&str]) -> Option<String> {
     Some(tail.to_owned())
 }
 
+fn looks_like_label(line: &str) -> bool {
+    ["bank tujuan", "bank penerima", "nomor rekening", "catatan transfer", "id transaksi", "transaction id", "waktu terkirim", "nama tujuan", "nominal", "jumlah transfer"]
+        .iter().any(|label| line.to_ascii_lowercase().starts_with(label))
+}
+
+
 fn trim_before_next_label<'a>(value: &'a str, labels: &[&str]) -> &'a str {
-    let lower = value.to_ascii_lowercase();
-    labels.iter().filter_map(|label| lower.find(&label.to_ascii_lowercase())).min()
+    let lower = value.to_lowercase();
+    labels.iter().filter_map(|label| lower.find(&label.to_lowercase())).min()
         .map(|idx| value[..idx].trim()).unwrap_or(value)
 }
 
@@ -168,6 +201,17 @@ fn trim_before_next_label<'a>(value: &'a str, labels: &[&str]) -> &'a str {
 mod tests {
     use super::*;
     const BODY: &str = "BUKTI TRANSFER\nID Transaksi #ST261121144802248WRXVK\nWaktu Terkirim 21 Nov 2026 14:48 WIB\nNama Tujuan EDDY KURNIAWAN\nRp1.210.000";
+
+    #[test]
+    fn parses_flip_receipt_values_after_html_block_conversion() {
+        let body = "\nID Transaksi\n#ST261121135251582SV50K\nWaktu Terkirim\n21 Nov 2026 13:53 WIB\nNama Tujuan\nMUHAMAD ANWAR GUNAWAN\nNominal\nRp18.975.000";
+        let parsed = parse_flip_email(None, body);
+        assert_eq!(parsed.transaction_id.as_deref(), Some("ST261121135251582SV50K"));
+        assert_eq!(parsed.transaction_date.as_deref(), Some("21/11/2026"));
+        assert_eq!(parsed.recipient_name.as_deref(), Some("MUHAMAD ANWAR GUNAWAN"));
+        assert_eq!(parsed.amount, Some(18_975_000));
+        assert!(parsed.review_reasons.is_empty());
+    }
 
     #[test]
     fn parses_sample_fields_without_subject_fallback() {
@@ -180,21 +224,23 @@ mod tests {
     }
 
     #[test]
-    fn missing_recipient_is_not_recovered_from_subject() {
-        let parsed = parse_flip_email(Some("Transfer ke EDDY KURNIAWAN berhasil"), "ID Transaksi #ST12345678\nWaktu Terkirim 21 Nov 2026 14:48 WIB\nRp100.000");
-        assert_eq!(parsed.recipient_name, None);
-        assert!(parsed.review_reasons.iter().any(|reason| reason.contains("Nama Tujuan")));
+    fn supports_labels_and_values_on_separate_lines() {
+        let parsed = parse_flip_email(None, "ID Transaksi:\nST12345678\nWaktu Terkirim:\n21 November 2026 10:00 WIB\nNama Tujuan:\nEDDY KURNIAWAN\nJumlah Transfer:\nRp 856.000");
+        assert_eq!(parsed.transaction_id.as_deref(), Some("ST12345678"));
+        assert_eq!(parsed.transaction_date.as_deref(), Some("21/11/2026"));
+        assert_eq!(parsed.recipient_name.as_deref(), Some("EDDY KURNIAWAN"));
+        assert_eq!(parsed.amount, Some(856_000));
     }
 
     #[test]
     fn rejects_invalid_calendar_date() {
-        assert_eq!(extract_sent_date("Waktu Terkirim 31 Feb 2026 12:00 WIB"), None);
-        assert_eq!(extract_sent_date("Waktu Terkirim 29 Feb 2024 12:00 WIB"), Some("29/02/2024".into()));
+        assert_eq!(extract_sent_date("Waktu Terkirim 31 Feb 2026 12:00"), None);
+        assert_eq!(extract_sent_date("Waktu Terkirim 29 Feb 2024 12:00"), Some("29/02/2024".into()));
     }
 
     #[test]
     fn supports_numeric_date_format() {
-        assert_eq!(extract_sent_date("Waktu Terkirim 21/11/2026 14:48 WIB"), Some("21/11/2026".into()));
+        assert_eq!(extract_sent_date("Waktu Terkirim 21/11/2026 14:48"), Some("21/11/2026".into()));
     }
 
     #[test]

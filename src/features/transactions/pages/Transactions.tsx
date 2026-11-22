@@ -59,12 +59,13 @@ export default function Transactions() {
       <div className="filter-bar"><label htmlFor="status-filter">Status</label><select id="status-filter" value={filter} onChange={e => setFilter(e.target.value)}>{filters.map(f => <option key={f} value={f}>{f}</option>)}</select><span className="muted">{rows.length} data ditampilkan</span></div>
       <div className="transaction-table-wrap">
         <table className="transaction-table">
-          <thead><tr><th>Tanggal</th><th>Nama Tujuan</th><th>Nominal</th><th>Catatan Transfer (OCR)</th><th>Status</th><th>Aksi</th></tr></thead>
+          <thead><tr><th>Tanggal</th><th>Nama Tujuan</th><th>Flip Transaction ID</th><th>Nominal</th><th>Catatan Transfer (OCR)</th><th>Status</th><th>Aksi</th></tr></thead>
           <tbody>
             {rows.map(row => (
               <tr key={row.id}>
                 <td>{dateLabel(row.transactionDate)}</td>
-                <td><strong>{row.recipientName || '—'}</strong><small>{row.accountEmail}</small></td>
+                <td className="recipient-cell"><strong>{row.recipientName || '—'}</strong><small className="account-email">{row.accountEmail}</small></td>
+                <td className="transaction-id-cell">{row.flipTransactionId || '—'}</td>
                 <td className="amount">{formatAmount(row.amount)}</td>
                 <td className="note-cell">
                   {editingId === row.id ? (
@@ -77,7 +78,7 @@ export default function Transactions() {
                 <td className="actions-cell"><button className="subtle small" onClick={() => beginEdit(row)} disabled={savingId === row.id}>Edit Catatan</button>{['Failed', 'Needs Review', 'Duplicate Review'].includes(row.status) && <button className="subtle small" onClick={() => void retry(row.id)} disabled={savingId === row.id}>{savingId === row.id ? 'Retry…' : 'Retry'}</button>}</td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={6} className="empty-cell">{loading ? 'Memuat transaksi…' : 'Belum ada data transaksi pada status ini.'}</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={7} className="empty-cell">{loading ? 'Memuat transaksi…' : 'Belum ada data transaksi pada status ini.'}</td></tr>}
           </tbody>
         </table>
       </div>

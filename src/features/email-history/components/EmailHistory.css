@@ -61,3 +61,11 @@
 .history-footnote { margin:12px 0 0; color:#85909d; font-size:11px; }
 @media (max-width:800px) { .history-content { grid-template-columns:1fr; } .history-detail-panel { min-height:180px; } }
 @media (max-width:560px) { .history-stats { grid-template-columns:repeat(2,minmax(0,1fr)); } .history-header { align-items:flex-start; } .history-email-details div { grid-template-columns:78px minmax(0,1fr); } }
+
+.diagnostic-actions { margin: 0 0 16px; }
+.diagnostic-button { background:#eaf3ff; border:1px solid #c6defa; color:#1765b3; border-radius:9px; padding:9px 12px; font-size:12px; font-weight:600; cursor:pointer; }
+.diagnostic-button:hover:not(:disabled) { background:#dceeff; }
+.diagnostic-button:disabled { opacity:.65; cursor:wait; }
+.diagnostic-success, .diagnostic-error { margin:8px 0 0; font-size:11px; line-height:1.45; overflow-wrap:anywhere; }
+.diagnostic-success { color:#13804a; }
+.diagnostic-error { color:#b42318; }

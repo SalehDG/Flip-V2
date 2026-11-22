@@ -51,6 +51,7 @@ pub fn run() {
             commands::gmail_account_commands::get_gmail_accounts,
             commands::gmail_account_commands::update_sync_start_date,
             commands::gmail_history_commands::get_gmail_history,
+            commands::gmail_diagnostic_commands::export_gmail_message_diagnostic,
             commands::extraction_commands::run_transaction_extraction,
             commands::extraction_commands::retry_transaction_extraction_command,
             commands::extraction_commands::correct_transaction_transfer_note,

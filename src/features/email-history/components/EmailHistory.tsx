@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { getGmailHistory } from "../services/emailHistoryService";
+import { exportGmailMessageDiagnostic, getGmailHistory } from "../services/emailHistoryService";
 import type { GmailHistoryEmail } from "../types/emailHistory";
 import "./EmailHistory.css";
 
@@ -31,6 +31,9 @@ export default function EmailHistory() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [diagnosticLoading, setDiagnosticLoading] = useState(false);
+  const [diagnosticMessage, setDiagnosticMessage] = useState<string | null>(null);
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
 
   async function refresh() {
     setLoading(true);
@@ -46,6 +49,21 @@ export default function EmailHistory() {
     }
   }
   useEffect(() => { void refresh(); }, []);
+
+  async function exportDiagnostic() {
+    if (!selected || diagnosticLoading) return;
+    setDiagnosticLoading(true);
+    setDiagnosticMessage(null);
+    setDiagnosticError(null);
+    try {
+      const path = await exportGmailMessageDiagnostic(selected.accountId, selected.messageId);
+      setDiagnosticMessage(`Diagnostic berhasil disimpan: ${path}`);
+    } catch (err) {
+      setDiagnosticError(String(err));
+    } finally {
+      setDiagnosticLoading(false);
+    }
+  }
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -118,6 +136,13 @@ export default function EmailHistory() {
           {!selected ? <div className="history-empty detail-empty">Pilih email untuk melihat detail.</div> : (
             <>
               <div className="detail-title"><span className="detail-icon">✉</span><h3>{selected.subject || "(Tanpa subjek)"}</h3></div>
+              <div className="diagnostic-actions">
+                <button className="diagnostic-button" onClick={() => void exportDiagnostic()} disabled={diagnosticLoading}>
+                  {diagnosticLoading ? "Membuat diagnostic..." : "Export Diagnostic JSON"}
+                </button>
+                {diagnosticMessage && <p className="diagnostic-success" role="status">{diagnosticMessage}</p>}
+                {diagnosticError && <p className="diagnostic-error" role="alert">Gagal export diagnostic: {diagnosticError}</p>}
+              </div>
               <dl className="history-email-details">
                 <div><dt>Dari</dt><dd>{selected.sender || "Tidak tersedia"}</dd></div>
                 <div><dt>Akun</dt><dd>{selected.accountEmail}</dd></div>
