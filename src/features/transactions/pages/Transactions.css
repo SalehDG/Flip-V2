@@ -39,3 +39,43 @@
 @media(max-width:1250px){.transactions-workspace .tx-workspace-grid{grid-template-columns:minmax(0,1fr) 260px}.transactions-workspace .tx-table{min-width:720px}}
 @media(max-width:980px){.transactions-workspace .tx-workspace-grid{grid-template-columns:1fr}.transactions-workspace .tx-detail-panel{min-height:280px}.transactions-workspace .tx-detail-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.transactions-workspace .tx-detail-invoice{margin-top:4px}}
 @media(max-width:680px){.transactions-workspace .tx-page-header{align-items:flex-start}.transactions-workspace .tx-status-tabs button{padding:8px 9px}.transactions-workspace .tx-toolbar{grid-template-columns:1fr 1fr}.transactions-workspace .tx-search{grid-column:1/-1}.transactions-workspace .tx-detail-fields{grid-template-columns:1fr}.transactions-workspace .tx-bulk-bar{flex-wrap:wrap}.transactions-workspace .tx-bulk-bar strong{width:100%}.transactions-workspace .tx-pagination{align-items:flex-start;flex-direction:column}}
+
+/* Transaction detail drawer can be toggled without losing row selection. */
+.transactions-workspace .tx-page-header .tx-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.transactions-workspace .tx-detail-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.transactions-workspace .tx-workspace-grid.detail-closed {
+  grid-template-columns: minmax(0, 1fr);
+}
+.transactions-workspace .tx-workspace-grid.detail-closed .tx-main-panel {
+  width: 100%;
+}
+@media (max-width: 680px) {
+  .transactions-workspace .tx-page-header .tx-header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
+/* Detail visibility control uses the primary Flip blue to stand out. */
+.transactions-workspace .tx-detail-toggle,
+.transactions-workspace .tx-detail-toggle:hover:not(:disabled) {
+  background: #2477e5;
+  color: #fff;
+  border-color: #2477e5;
+}
+.transactions-workspace .tx-detail-toggle:hover:not(:disabled) {
+  background: #155fc7;
+  border-color: #155fc7;
+}
+.transactions-workspace .tx-detail-toggle:focus-visible {
+  outline: 2px solid #90bcff;
+  outline-offset: 2px;
+}
