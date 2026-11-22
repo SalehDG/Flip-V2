@@ -1,132 +1,57 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { transactionService } from '../services/transactionService';
 import type { ExtractionProgressEvent, ExtractionTransaction } from '../../../services/tauri/types';
+import './Transactions.css';
 
 const filters = ['Semua', 'Completed', 'Needs Review', 'Duplicate Review', 'Failed', 'Skipped', 'Detected', 'Parsed', 'OCR Processing'];
-function formatAmount(value: number | null) {
-  return value == null ? '—' : new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(value);
-}
-function dateLabel(value: string | null) {
-  if (!value) return '—';
-  const date = new Date(`${value}T00:00:00`);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('id-ID');
-}
-
-function formatEmailBody(body: string) {
-  // Decode HTML entities without injecting markup into the React tree.
-  const decoder = document.createElement('textarea');
-  decoder.innerHTML = body;
-  const decoded = decoder.value.replace(/\u200b/g, '').replace(/\u00a0/g, ' ');
-  return decoded
-    .replace(/\r\n?/g, '\n')
-    .split('\n')
-    .map(line => line.replace(/[\t ]+/g, ' ').trim())
-    .filter((line, index, lines) => line !== '' || (index > 0 && lines[index - 1] !== ''))
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
+const labels: Record<string, string> = { Completed: 'Selesai', 'Needs Review': 'Perlu Ditinjau', 'Duplicate Review': 'Duplikat', Failed: 'Gagal', Skipped: 'Dilewati', Detected: 'Terdeteksi', Parsed: 'Diparsing', 'OCR Processing': 'Proses OCR' };
+function formatAmount(value: number | null) { return value == null ? '—' : new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(value); }
+function dateLabel(value: string | null) { if (!value) return '—'; const date = new Date(`${value}T00:00:00`); return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }); }
+function dateTimeLabel(value: string | null) { if (!value) return '—'; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }); }
+function exportDate(value: string | null) { if (!value) return ''; const parts = value.slice(0, 10).split('-'); return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : value; }
+function statusClass(status: string) { return status.toLowerCase().replaceAll(' ', '-'); }
+function formatEmailBody(body: string) { const decoder = document.createElement('textarea'); decoder.innerHTML = body; const decoded = decoder.value.replace(/\u200b/g, '').replace(/\u00a0/g, ' '); return decoded.replace(/\r\n?/g, '\n').split('\n').map(line => line.replace(/[\t ]+/g, ' ').trim()).filter((line, index, lines) => line !== '' || (index > 0 && lines[index - 1] !== '')).join('\n').replace(/\n{3,}/g, '\n\n').trim(); }
+function dateMatches(value: string | null, range: string) { if (range === 'all') return true; if (!value) return false; const d = new Date(`${value}T00:00:00`); const today = new Date(); today.setHours(0,0,0,0); const days = range === 'today' ? 0 : range === '7d' ? 7 : range === '30d' ? 30 : 90; const from = new Date(today); from.setDate(from.getDate() - days); return d >= from && d <= today; }
 export default function Transactions() {
   const [rows, setRows] = useState<ExtractionTransaction[]>([]);
-  const [filter, setFilter] = useState('Semua');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [savingId, setSavingId] = useState<number | null>(null);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [noteDraft, setNoteDraft] = useState('');
+  const [filter, setFilter] = useState('Semua'); const [dateFilter, setDateFilter] = useState('all'); const [accountFilter, setAccountFilter] = useState('all'); const [search, setSearch] = useState('');
+  const [selectedId, setSelectedId] = useState<number | null>(null); const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [page, setPage] = useState(1); const pageSize = 8;
+  const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [savingId, setSavingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null); const [noteDraft, setNoteDraft] = useState('');
   const [reviewRow, setReviewRow] = useState<ExtractionTransaction | null>(null);
   const [reviewDraft, setReviewDraft] = useState({ date: '', recipient: '', transactionId: '', amount: '', note: '' });
-  const [messageOpen, setMessageOpen] = useState(true);
-  const [invoiceOpen, setInvoiceOpen] = useState(true);
-  const [messageBody, setMessageBody] = useState('');
-  const [messageLoading, setMessageLoading] = useState(false);
-  const [messageError, setMessageError] = useState('');
-
-  const load = useCallback(async () => {
-    setLoading(true); setError('');
-    try { setRows(await transactionService.list({ limit: 250, offset: 0, status: filter === 'Semua' ? null : filter })); }
-    catch (e) { setError(String(e)); }
-    finally { setLoading(false); }
-  }, [filter]);
+  const [messageOpen, setMessageOpen] = useState(true); const [invoiceOpen, setInvoiceOpen] = useState(true); const [messageBody, setMessageBody] = useState(''); const [messageLoading, setMessageLoading] = useState(false); const [messageError, setMessageError] = useState(''); const [copyNotice, setCopyNotice] = useState('');
+  const load = useCallback(async () => { setLoading(true); setError(''); try { setRows(await transactionService.list({ limit: 250, offset: 0, status: null })); } catch (e) { setError(String(e)); } finally { setLoading(false); } }, []);
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listen<ExtractionProgressEvent>('flip://extraction-progress', () => { void load(); }).then(fn => { unlisten = fn; });
-    return () => unlisten?.();
-  }, [load]);
-  useEffect(() => {
-    if (!reviewRow || !messageOpen) return;
-    let cancelled = false;
-    setMessageBody('');
-    setMessageError('');
-    setMessageLoading(true);
-    invoke<string>('get_gmail_message_body', {
-      accountId: reviewRow.gmailAccountId,
-      messageId: reviewRow.gmailMessageId,
-    })
-      .then(body => { if (!cancelled) setMessageBody(body); })
-      .catch(error => { if (!cancelled) setMessageError(String(error)); })
-      .finally(() => { if (!cancelled) setMessageLoading(false); });
-    return () => { cancelled = true; };
-  }, [reviewRow, messageOpen]);
-
-  async function retry(id: number) {
-    setSavingId(id); setError('');
-    try { await transactionService.retry(id); await load(); }
-    catch (e) { setError(String(e)); }
-    finally { setSavingId(null); }
-  }
+  useEffect(() => { let unlisten: (() => void) | undefined; void listen<ExtractionProgressEvent>('flip://extraction-progress', () => { void load(); }).then(fn => { unlisten = fn; }); return () => unlisten?.(); }, [load]);
+  useEffect(() => { if (!reviewRow || !messageOpen) return; let cancelled = false; setMessageBody(''); setMessageError(''); setMessageLoading(true); invoke<string>('get_gmail_message_body', { accountId: reviewRow.gmailAccountId, messageId: reviewRow.gmailMessageId }).then(body => { if (!cancelled) setMessageBody(body); }).catch(error => { if (!cancelled) setMessageError(String(error)); }).finally(() => { if (!cancelled) setMessageLoading(false); }); return () => { cancelled = true; }; }, [reviewRow, messageOpen]);
+  const accounts = useMemo(() => Array.from(new Set(rows.map(r => r.accountEmail).filter(Boolean))).sort(), [rows]);
+  const counts = useMemo(() => Object.fromEntries(filters.slice(1).map(status => [status, rows.filter(r => r.status === status).length])), [rows]);
+  const filteredRows = useMemo(() => rows.filter(r => (filter === 'Semua' || r.status === filter) && (accountFilter === 'all' || r.accountEmail === accountFilter) && dateMatches(r.transactionDate, dateFilter) && (!search.trim() || [r.recipientName, r.transferNote, r.amount == null ? '' : String(r.amount), r.flipTransactionId, r.accountEmail].some(v => String(v ?? '').toLowerCase().includes(search.trim().toLowerCase())))), [rows, filter, accountFilter, dateFilter, search]);
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / pageSize)); const pageRows = filteredRows.slice((page - 1) * pageSize, page * pageSize); const selectedRow = rows.find(r => r.id === selectedId) ?? null;
+  useEffect(() => { setPage(1); }, [filter, dateFilter, accountFilter, search]);
+  async function retry(id: number) { setSavingId(id); setError(''); try { await transactionService.retry(id); await load(); } catch (e) { setError(String(e)); } finally { setSavingId(null); } }
   function beginEdit(row: ExtractionTransaction) { setEditingId(row.id); setNoteDraft(row.transferNote ?? ''); }
-  function openReview(row: ExtractionTransaction) {
-    setMessageOpen(true);
-    setInvoiceOpen(true);
-    setReviewRow(row);
-    setReviewDraft({ date: row.transactionDate ?? '', recipient: row.recipientName ?? '', transactionId: row.flipTransactionId ?? '', amount: row.amount == null ? '' : String(row.amount), note: row.transferNote ?? '' });
-  }
-  async function saveNote(id: number) {
-    setSavingId(id); setError('');
-    try { await transactionService.correctNote(id, noteDraft.trim()); setEditingId(null); await load(); }
-    catch (e) { setError(String(e)); }
-    finally { setSavingId(null); }
-  }
-
-  return (
-    <section className="transactions-page">
-      <div className="page-heading">
-        <div><h2>Transaksi</h2><p>Data hasil ekstraksi email dan OCR.</p></div>
-        <button className="subtle" onClick={() => void load()} disabled={loading}>{loading ? 'Memuat…' : '↻ Refresh'}</button>
-      </div>
-      {error && <div className="error-banner" role="alert">{error}</div>}
-      <div className="filter-bar"><label htmlFor="status-filter">Status</label><select id="status-filter" value={filter} onChange={e => setFilter(e.target.value)}>{filters.map(f => <option key={f} value={f}>{f}</option>)}</select><span className="muted">{rows.length} data ditampilkan</span></div>
-      <div className="transaction-table-wrap">
-        <table className="transaction-table">
-          <thead><tr><th>Tanggal</th><th>Nama Tujuan</th><th>Flip Transaction ID</th><th>Nominal</th><th>Catatan Transfer (OCR)</th><th>Status</th><th>Aksi</th></tr></thead>
-          <tbody>
-            {rows.map(row => (
-              <tr key={row.id}>
-                <td>{dateLabel(row.transactionDate)}</td>
-                <td className="recipient-cell"><strong>{row.recipientName || '—'}</strong><small className="account-email">{row.accountEmail}</small></td>
-                <td className="transaction-id-cell">{row.flipTransactionId || '—'}</td>
-                <td className="amount">{formatAmount(row.amount)}</td>
-                <td className="note-cell">
-                  {editingId === row.id ? (
-                    <div className="note-edit"><textarea value={noteDraft} onChange={e => setNoteDraft(e.target.value)} rows={2}/><div><button className="primary small" onClick={() => void saveNote(row.id)} disabled={savingId === row.id}>Simpan</button><button className="subtle small" onClick={() => setEditingId(null)}>Batal</button></div></div>
-                  ) : (
-                    <><span>{row.transferNote || '—'}</span>{row.reviewReason && <small className="review-reason">{row.reviewReason}</small>}{row.lastError && <small className="error-text">{row.lastError}</small>}</>
-                  )}
-                </td>
-                <td><span className={`status-chip ${row.status.toLowerCase().replaceAll(' ', '-')}`}>{row.status}</span></td>
-                <td className="actions-cell">{row.status === 'Needs Review' && <button className="primary small" onClick={() => openReview(row)}>Review & Edit</button>}<button className="subtle small" onClick={() => beginEdit(row)} disabled={savingId === row.id}>Edit Catatan</button>{['Failed', 'Needs Review', 'Duplicate Review'].includes(row.status) && <button className="subtle small" onClick={() => void retry(row.id)} disabled={savingId === row.id}>{savingId === row.id ? 'Retry…' : 'Retry'}</button>}</td>
-              </tr>
-            ))}
-            {rows.length === 0 && <tr><td colSpan={7} className="empty-cell">{loading ? 'Memuat transaksi…' : 'Belum ada data transaksi pada status ini.'}</td></tr>}
-          </tbody>
-        </table>
-      </div>
-      <p className="muted table-footnote">Hasil OCR ditampilkan apa adanya. Koreksi Catatan Transfer tersimpan ke database lokal.</p>
+  function openReview(row: ExtractionTransaction) { setMessageOpen(true); setInvoiceOpen(true); setReviewRow(row); setReviewDraft({ date: row.transactionDate ?? '', recipient: row.recipientName ?? '', transactionId: row.flipTransactionId ?? '', amount: row.amount == null ? '' : String(row.amount), note: row.transferNote ?? '' }); }
+  async function saveNote(id: number) { setSavingId(id); setError(''); try { await transactionService.correctNote(id, noteDraft.trim()); setEditingId(null); await load(); } catch (e) { setError(String(e)); } finally { setSavingId(null); } }
+  function toggleSelection(id: number) { setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }
+  function toggleVisible() { const ids = pageRows.map(r => r.id); const all = ids.length > 0 && ids.every(id => selectedIds.includes(id)); setSelectedIds(prev => all ? prev.filter(id => !ids.includes(id)) : [...new Set([...prev, ...ids])]); }
+  async function copySelected() { const reviewCount = rows.filter(r => selectedIds.includes(r.id) && r.status === 'Needs Review').length; if (reviewCount && !window.confirm(`Ada ${reviewCount} transaksi yang perlu ditinjau. Tetap salin?`)) return; const eligible = rows.filter(r => selectedIds.includes(r.id) && !['Failed', 'Duplicate Review'].includes(r.status)); if (!eligible.length) { setCopyNotice('Tidak ada transaksi terpilih yang bisa disalin.'); return; } const text = eligible.map(r => [exportDate(r.transactionDate), r.transferNote ?? '', r.recipientName ?? '', '', r.amount ?? '', '', ''].join('\t')).join('\n'); try { await navigator.clipboard.writeText(text); setCopyNotice(`${eligible.length} transaksi disalin ke clipboard.`); } catch { setCopyNotice('Clipboard tidak dapat diakses.'); } }
+  return <section className="transactions-page transactions-workspace">
+    <header className="tx-page-header"><div><h2>Transaksi</h2><p>Kelola dan proses hasil ekstraksi email transaksi Flip.</p></div><button className="subtle tx-refresh" onClick={() => void load()} disabled={loading}><span>↻</span>{loading ? 'Memuat…' : 'Refresh'}</button></header>
+    {error && <div className="error-banner" role="alert">{error}</div>}
+    <div className="tx-status-tabs" role="tablist" aria-label="Filter status transaksi">{filters.slice(0,5).map(status => <button key={status} role="tab" aria-selected={filter === status} className={filter === status ? 'active' : ''} onClick={() => setFilter(status)}><span className={`tx-tab-icon ${statusClass(status)}`}>{status === 'Semua' ? '▱' : status === 'Completed' ? '✓' : status === 'Needs Review' ? '△' : status === 'Duplicate Review' ? '▢' : '⊗'}</span>{labels[status] ?? status}<span className="tx-tab-count">{status === 'Semua' ? rows.length.toLocaleString('id-ID') : (counts[status] ?? 0).toLocaleString('id-ID')}</span></button>)}</div>
+    <div className="tx-toolbar"><select value={dateFilter} onChange={e => setDateFilter(e.target.value)} aria-label="Filter tanggal"><option value="all">Semua tanggal</option><option value="today">Hari ini</option><option value="7d">7 hari terakhir</option><option value="30d">30 hari terakhir</option><option value="90d">90 hari terakhir</option></select><select value={accountFilter} onChange={e => setAccountFilter(e.target.value)} aria-label="Filter akun Gmail"><option value="all">Semua akun Gmail</option>{accounts.map(a => <option key={a} value={a}>{a}</option>)}</select><label className="tx-search"><span>⌕</span><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cari penerima, catatan transfer, atau nominal…"/></label></div>
+    <div className="tx-workspace-grid"><div className="tx-main-panel"><div className="tx-table-scroll"><table className="tx-table"><thead><tr><th className="tx-check-col"><input type="checkbox" checked={pageRows.length > 0 && pageRows.every(r => selectedIds.includes(r.id))} onChange={toggleVisible} aria-label="Pilih semua di halaman"/></th><th>Tanggal</th><th>Penerima</th><th>Nominal</th><th>Catatan Transfer</th><th>Status</th><th>Aksi</th></tr></thead><tbody>
+    {pageRows.map(row => <tr key={row.id} className={`${selectedId === row.id ? 'selected' : ''} ${row.status === 'Needs Review' ? 'needs-review-row' : row.status === 'Failed' ? 'failed-row' : ''}`} onClick={() => setSelectedId(row.id)}><td className="tx-check-col" onClick={e => e.stopPropagation()}><input type="checkbox" checked={selectedIds.includes(row.id)} onChange={() => toggleSelection(row.id)} aria-label={`Pilih transaksi ${row.id}`}/></td><td className="tx-date-cell">{dateLabel(row.transactionDate)}<small>{dateTimeLabel(row.createdAt)}</small></td><td className="tx-recipient-cell"><strong>{row.recipientName || '—'}</strong></td><td className="tx-amount-cell">{formatAmount(row.amount)}</td><td className="tx-note-cell">{editingId === row.id ? <div className="tx-note-edit" onClick={e => e.stopPropagation()}><textarea value={noteDraft} onChange={e => setNoteDraft(e.target.value)} rows={2}/><div><button className="primary small" onClick={() => void saveNote(row.id)} disabled={savingId === row.id}>Simpan</button><button className="subtle small" onClick={() => setEditingId(null)}>Batal</button></div></div> : <><span>{row.transferNote || '—'}</span>{row.status === 'Needs Review' && <small className="tx-note-warning">Catatan perlu diperiksa</small>}</>}</td><td><span className={`status-chip ${statusClass(row.status)}`}>{labels[row.status] ?? row.status}</span></td><td className="tx-row-actions" onClick={e => e.stopPropagation()}>{row.status === 'Needs Review' ? <button className="primary small" onClick={() => openReview(row)}>Review</button> : <button className="tx-icon-btn" title="Edit catatan" onClick={() => beginEdit(row)}>✎</button>}{['Failed','Needs Review','Duplicate Review'].includes(row.status) && <button className="tx-icon-btn" title="Coba ulang" onClick={() => void retry(row.id)} disabled={savingId === row.id}>{savingId === row.id ? '…' : '↻'}</button>}<button className="tx-icon-btn" title="Detail transaksi" onClick={() => setSelectedId(row.id)}>⋮</button></td></tr>)}
+    {!pageRows.length && <tr><td colSpan={7} className="empty-cell">{loading ? 'Memuat transaksi…' : 'Tidak ada transaksi yang cocok dengan filter.'}</td></tr>}
+    </tbody></table></div><footer className="tx-pagination"><span>Menampilkan {filteredRows.length ? (page-1)*pageSize+1 : 0}–{Math.min(page*pageSize,filteredRows.length)} dari {filteredRows.length.toLocaleString('id-ID')} transaksi <small>· Maks. 250 data dimuat</small></span><div><button className="tx-page-btn" disabled={page<=1} onClick={() => setPage(p=>p-1)}>‹</button><span className="tx-page-current">{page}</span><span> / {pageCount}</span><button className="tx-page-btn" disabled={page>=pageCount} onClick={() => setPage(p=>p+1)}>›</button></div></footer></div>
+    <aside className={`tx-detail-panel ${selectedRow ? '' : 'empty'}`}><div className="tx-detail-header"><div><h3>Detail Transaksi</h3><p>{selectedRow ? 'Informasi transaksi terpilih' : 'Pilih transaksi untuk melihat detail'}</p></div>{selectedRow && <button className="tx-close-detail" onClick={() => setSelectedId(null)} aria-label="Tutup detail">×</button>}</div>
+    {selectedRow ? <><div className="tx-detail-status-line"><span className={`status-chip ${statusClass(selectedRow.status)}`}>{labels[selectedRow.status] ?? selectedRow.status}</span><span>{dateTimeLabel(selectedRow.createdAt)}</span></div><div className="tx-detail-fields"><div><label>Penerima</label><strong>{selectedRow.recipientName || 'Belum terbaca'}</strong></div><div><label>Nominal</label><strong className="tx-detail-amount">{formatAmount(selectedRow.amount)}</strong></div><div><label>Catatan Transfer</label><p>{selectedRow.transferNote || 'Belum ada catatan'}</p></div><div><label>Akun Gmail</label><p>{selectedRow.accountEmail || '—'}</p></div><div><label>Flip Transaction ID</label><p className="tx-detail-id">{selectedRow.flipTransactionId || 'Tidak tersedia'}</p></div><div><label>Alasan / Error</label><p className="tx-detail-reason">{selectedRow.reviewReason || selectedRow.lastError || 'Tidak ada catatan masalah.'}</p></div></div><div className="tx-detail-invoice"><div className="tx-detail-section-title"><strong>Lampiran Invoice</strong><span>{selectedRow.pngPath ? 'PNG' : 'Tidak tersedia'}</span></div>{selectedRow.pngPath ? <div className="tx-invoice-preview"><img src={convertFileSrc(selectedRow.pngPath)} alt="Lampiran invoice transaksi"/></div> : <div className="tx-invoice-empty">Lampiran PNG tidak tersedia untuk transaksi ini.</div>}</div><div className="tx-detail-actions">{selectedRow.status === 'Needs Review' && <button className="primary" onClick={() => openReview(selectedRow)}>Review & Edit</button>}<button className="subtle" onClick={() => openReview(selectedRow)}>Lihat Email Sumber</button><button className="subtle" onClick={() => beginEdit(selectedRow)}>Edit Catatan</button>{['Failed','Needs Review','Duplicate Review'].includes(selectedRow.status) && <button className="subtle" onClick={() => void retry(selectedRow.id)} disabled={savingId===selectedRow.id}>{savingId===selectedRow.id ? 'Mencoba…' : 'Coba Ulang'}</button>}</div></> : <div className="tx-detail-empty-state"><span>⌁</span><strong>Belum ada transaksi dipilih</strong><p>Klik salah satu baris untuk melihat informasi lengkap dan lampiran.</p></div>}</aside></div>
+    {selectedIds.length>0 && <div className="tx-bulk-bar"><strong>{selectedIds.length} transaksi dipilih</strong><button className="subtle" onClick={() => setSelectedIds([])}>Batal Pilih</button><button className="subtle" onClick={() => setSelectedIds(rows.map(r=>r.id))}>Pilih Semua ({rows.length})</button><button className="primary" onClick={() => void copySelected()}>▣ Salin ke Clipboard</button></div>}{copyNotice && <div className="tx-copy-notice" role="status">{copyNotice}<button onClick={() => setCopyNotice('')}>×</button></div>}<p className="tx-footnote">Data transaksi lokal · Catatan OCR dapat dikoreksi · Transaksi bermasalah dapat ditinjau ulang.</p>
       {reviewRow && (
         <>
         <style>{`
@@ -215,5 +140,5 @@ export default function Transactions() {
         </>
       )}
     </section>
-  );
+  ;
 }
