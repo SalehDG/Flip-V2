@@ -9,4 +9,6 @@ export const tauriBridge = {
   retryExtraction: (transactionId: number) => invoke<string>('retry_transaction_extraction_command', { transactionId }),
   correctTransferNote: (transactionId: number, transferNote: string) =>
     invoke<string>('correct_transaction_transfer_note', { transactionId, transferNote }),
+  markTransactionsCopied: (transactionIds: number[]) =>
+    invoke<number>('mark_transactions_copied', { transactionIds }),
 };

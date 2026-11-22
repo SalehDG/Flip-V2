@@ -955,3 +955,21 @@ mod tests {
         remove_test_database(database, &path);
     }
 }
+
+
+/// Marks eligible transactions as copied only after the frontend confirms clipboard write.
+/// The first-copy timestamp is immutable; subsequent copies update only last_copied_at.
+pub fn mark_transactions_copied(database: &Database, transaction_ids: &[i64]) -> Result<usize, String> {
+    if transaction_ids.is_empty() { return Ok(0); }
+    let mut connection = database.connection.lock().map_err(lock_err)?;
+    let transaction = connection.transaction().map_err(db_err)?;
+    let mut updated = 0usize;
+    for id in transaction_ids.iter().copied().filter(|id| *id > 0) {
+        updated += transaction.execute(
+            "UPDATE transactions SET first_copied_at=COALESCE(first_copied_at, datetime('now')), last_copied_at=datetime('now'), updated_at=datetime('now') WHERE id=?1 AND status IN ('Completed','Needs Review')",
+            params![id],
+        ).map_err(db_err)?;
+    }
+    transaction.commit().map_err(db_err)?;
+    Ok(updated)
+}

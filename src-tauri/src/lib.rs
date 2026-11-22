@@ -4,7 +4,11 @@ mod gmail_auth;
 mod gmail_sync;
 mod services;
 
-use tauri::{Emitter, Manager};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager, WindowEvent,
+};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -28,7 +32,63 @@ pub fn run() {
 
             app.manage(database.clone());
             app.manage(gmail_auth::oauth_session::OAuthSessionStore::default());
-            app.manage(gmail_sync::SyncCoordinator::default());
+            let sync_coordinator = gmail_sync::SyncCoordinator::default();
+            app.manage(sync_coordinator.clone());
+
+            // Gmail monitoring starts with the app and remains active independently
+            // of the dashboard window. It performs an initial cycle immediately,
+            // then checks connected accounts every 60 seconds.
+            gmail_sync::monitoring::start(app.handle().clone(), database.clone(), sync_coordinator);
+
+            // System tray keeps the Gmail monitoring engine alive when the
+            // dashboard window is closed. Tray menu offers explicit exit.
+            let open_dashboard = MenuItem::with_id(app, "open-dashboard", "Buka Dashboard", true, None::<&str>)?;
+            let exit_app = MenuItem::with_id(app, "exit-app", "Exit Flip V2", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&open_dashboard, &exit_app])?;
+            TrayIconBuilder::new()
+                .tooltip("Flip V2 - Monitoring Gmail")
+                .icon(app.default_window_icon().expect("default window icon missing").clone())
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open-dashboard" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.unminimize();
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "exit-app" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.unminimize();
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            // Closing the dashboard hides it instead of terminating the app.
+            // Monitoring continues until Exit is selected from the tray menu.
+            if let Some(window) = app.get_webview_window("main") {
+                let close_window = window.clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = close_window.hide();
+                    }
+                });
+            }
 
             // Startup extraction runs in a blocking worker so OCR does not block
             // Tauri's async runtime or hold the SQLite mutex while Tesseract runs.
@@ -58,6 +118,7 @@ pub fn run() {
             commands::extraction_commands::correct_transaction_transfer_note,
             commands::extraction_commands::get_extraction_transactions,
             commands::extraction_commands::get_extraction_status_summary,
+            commands::extraction_commands::mark_transactions_copied,
             gmail_auth::oauth_session::start_gmail_oauth,
             gmail_auth::oauth_session::complete_gmail_oauth,
             gmail_auth::oauth_session::cancel_gmail_oauth,

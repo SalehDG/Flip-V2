@@ -4,7 +4,7 @@ use crate::{
     databases::Database,
     services::extraction::pipeline::{
         correct_transfer_note, get_extraction_status_summary as read_extraction_status_summary, list_extraction_transactions,
-        retry_transaction_extraction, run_pending_extraction, ExtractionStatusSummary,
+        retry_transaction_extraction, run_pending_extraction, mark_transactions_copied as mark_copied_records, ExtractionStatusSummary,
         ExtractionSummary, ExtractionTransactionRecord,
     },
     services::ocr::TesseractOptions,
@@ -71,4 +71,10 @@ pub fn get_extraction_status_summary(
     database: State<'_, Database>,
 ) -> Result<ExtractionStatusSummary, String> {
     read_extraction_status_summary(database.inner())
+}
+
+
+#[tauri::command]
+pub fn mark_transactions_copied(database: State<'_, Database>, transaction_ids: Vec<i64>) -> Result<usize, String> {
+    mark_copied_records(database.inner(), &transaction_ids)
 }

@@ -1,5 +1,6 @@
 // Gmail synchronization commands and coordination.
 pub mod service;
+pub mod monitoring;
 pub(crate) mod token_manager;
 
 use std::{

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import type { ReactNode } from 'react';
 import { tauriBridge } from '../../../services/tauri/bridge';
 import type { ExtractionStatusSummary, ExtractionTransaction } from '../../../services/tauri/types';
@@ -44,6 +45,8 @@ export default function Dashboard({ onOpenTransactions }: Props) {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<number[]>([]);
   const [dateRange, setDateRange] = useState('7');
+  const [monitoringReady, setMonitoringReady] = useState(false);
+  const [lastMonitoringCycle, setLastMonitoringCycle] = useState<string | null>(null);
   const refresh = useCallback(async () => {
     try {
       const [summary, transactions] = await Promise.all([tauriBridge.getExtractionSummary(), tauriBridge.getTransactions({ limit: 5, offset: 0 })]);
@@ -51,6 +54,27 @@ export default function Dashboard({ onOpenTransactions }: Props) {
     } catch (e) { setError(String(e)); }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    let cancelled = false;
+    let unlistenStarted: (() => void) | undefined;
+    let unlistenCycle: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+    void Promise.all([
+      listen('flip://monitoring-started', () => { if (!cancelled) setMonitoringReady(true); }),
+      listen('flip://monitoring-cycle-complete', () => { if (!cancelled) setLastMonitoringCycle(new Date().toISOString()); }),
+      listen('flip://monitoring-error', () => { if (!cancelled) setMonitoringReady(true); }),
+    ]).then(([started, cycle, error]) => {
+      if (cancelled) { started(); cycle(); error(); return; }
+      unlistenStarted = started; unlistenCycle = cycle; unlistenError = error;
+    });
+    // The backend starts the monitor during app setup; this UI indicator reflects
+    // the configured app-lifetime service, not whether an account is connected.
+    setMonitoringReady(true);
+    return () => {
+      cancelled = true;
+      unlistenStarted?.(); unlistenCycle?.(); unlistenError?.();
+    };
+  }, []);
   async function processQueue() {
     setBusy(true); setError(''); setNotice('Menjalankan proses ekstraksi antrean…');
     try { const result = await tauriBridge.runExtraction(); setNotice(`Pemrosesan selesai: ${result.processed} diproses, ${result.completed} selesai, ${result.needsReview} perlu ditinjau.`); await refresh(); }
@@ -73,12 +97,12 @@ export default function Dashboard({ onOpenTransactions }: Props) {
     const reviewCount = chosen.filter(row => normalizeStatus(row.status) === 'needs_review').length;
     if (reviewCount && !window.confirm(`Ada ${reviewCount} transaksi yang perlu ditinjau. Tetap salin?`)) return;
     const tsv = chosen.map(row => [row.transactionDate ? new Date(row.transactionDate).toLocaleDateString('id-ID') : '', row.transferNote ?? '', row.recipientName ?? '', '', row.amount ?? '', '', ''].join('\t')).join('\n');
-    try { await navigator.clipboard.writeText(tsv); setNotice(`${chosen.length} transaksi berhasil disalin ke clipboard.`); setSelected([]); }
+    try { await navigator.clipboard.writeText(tsv); try { await tauriBridge.markTransactionsCopied(chosen.map(row => row.id)); setNotice(`${chosen.length} transaksi berhasil disalin. Copy tracking tersimpan.`); } catch (trackingError) { setNotice(`${chosen.length} transaksi disalin, tetapi tracking gagal disimpan: ${String(trackingError)}`); } setSelected([]); }
     catch (e) { setError(`Gagal menyalin ke clipboard: ${String(e)}`); }
   }
   return <section className="dashboard-page">
     <div className="dash-welcome-row"><div><h1>Selamat datang di Flip V2 <span aria-hidden="true">👋</span></h1><p>Pengambil transaksi Flip dari Gmail, lengkap dengan OCR Catatan Transfer.</p></div>
-      <div className="dash-monitor-pill"><span className="dash-green-dot"/><div><strong>Monitoring Aktif</strong><small>Terakhir sinkronisasi: Menunggu koneksi backend</small></div></div>
+      <div className="dash-monitor-pill"><span className="dash-green-dot"/><div><strong>{monitoringReady ? 'Monitoring Otomatis Aktif' : 'Menyiapkan Monitoring'}</strong><small>{lastMonitoringCycle ? `Siklus terakhir: ${dateTime(lastMonitoringCycle)}` : 'Sync otomatis setiap 60 detik'}</small></div></div>
       <button className="dash-bell" aria-label="Notifikasi"><Icon name="bell"/><span className="dash-bell-dot"/></button>
     </div>
     {notice && <div className="notice" role="status">{notice}</div>}{error && <div className="error-banner" role="alert">{error}</div>}

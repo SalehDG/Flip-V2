@@ -1265,6 +1265,57 @@ fn persist_command_error(database: &Database, account_id: i64, error: &str) {
     let _ = mark_sync_failed(database, account_id, error, authentication_required);
 }
 
+
+/// Runs one automatic synchronization cycle for a connected account.
+/// Accounts without a configured initial sync date are intentionally skipped.
+pub(crate) async fn run_automatic_sync_for_account(
+    app: &AppHandle,
+    database: &Database,
+    coordinator: &SyncCoordinator,
+    account_id: i64,
+) -> Result<Option<SyncSummary>, String> {
+    let _permit = match coordinator.try_acquire(account_id) {
+        Ok(permit) => permit,
+        Err(_) => return Ok(None), // manual sync or another cycle already owns this account
+    };
+
+    let account_info = {
+        let connection = database.connection.lock().map_err(|error| format!("Database lock failed: {error}"))?;
+        let account = GmailAccountRepository::find_by_id(&connection, account_id)
+            .map_err(|error| format!("Failed to load Gmail account: {error}"))?
+            .ok_or("Gmail account not found")?;
+        if account.account_status != "connected" {
+            return Ok(None);
+        }
+        let token_reference = GmailAccountRepository::find_token_reference(&connection, account_id)
+            .map_err(|error| format!("Failed to read Gmail token reference: {error}"))?
+            .ok_or("Gmail account is disconnected")?;
+        (account.history_id, account.sync_start_date, token_reference)
+    };
+
+
+    let (history_id, start_date, _token_reference) = account_info;
+    let result = if history_id.is_some() {
+        run_incremental_sync(app, database, account_id).await
+    } else if let Some(start_date) = start_date {
+        run_initial_sync(app, database, account_id, &start_date).await
+    } else {
+        return Ok(None);
+    };
+
+    match result {
+        Ok(summary) => {
+            schedule_extraction_after_sync(app, database);
+            Ok(Some(summary))
+        }
+        Err(error) => {
+            persist_command_error(database, account_id, &error);
+            Err(error)
+        }
+    }
+}
+
+
 #[tauri::command]
 pub async fn get_gmail_sync_state(
     database: State<'_, Database>,
