@@ -2,10 +2,11 @@ pub(crate) mod migrations;
 pub mod repositories;
 
 use rusqlite::Connection;
-use std::{path::Path, sync::Mutex, time::Duration};
+use std::{path::Path, sync::{Arc, Mutex}, time::Duration};
 
+#[derive(Clone)]
 pub struct Database {
-    pub connection: Mutex<Connection>,
+    pub connection: Arc<Mutex<Connection>>,
 }
 
 impl Database {
@@ -19,7 +20,7 @@ impl Database {
         migrations::run(&mut connection)?;
 
         Ok(Self {
-            connection: Mutex::new(connection),
+            connection: Arc::new(Mutex::new(connection)),
         })
     }
 }

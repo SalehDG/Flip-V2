@@ -1,6 +1,7 @@
 use crate::{
     databases::{Database, repositories::gmail_account_repository::GmailAccountRepository},
     gmail_sync::{SyncCoordinator, token_manager::refresh_access_token},
+    services::{extraction::pipeline::run_pending_extraction, ocr::TesseractOptions},
 };
 use base64::{
     Engine,
@@ -1245,6 +1246,17 @@ async fn run_incremental_sync(
     })
 }
 
+fn schedule_extraction_after_sync(app: &AppHandle, database: &Database) {
+    let worker_database = database.clone();
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = run_pending_extraction(&worker_database, &TesseractOptions::default(), Some(&worker_app)) {
+            let _ = worker_app.emit("flip://extraction-error", error);
+        }
+    });
+}
+
+
 fn persist_command_error(database: &Database, account_id: i64, error: &str) {
     let authentication_required = error.contains("GMAIL_TOKEN_REVOKED")
         || error.contains("GMAIL_ACCESS_TOKEN_EXPIRED")
@@ -1318,6 +1330,8 @@ pub async fn start_initial_gmail_sync(
 
     if let Err(error) = &result {
         persist_command_error(&database, account_id, error);
+    } else {
+        schedule_extraction_after_sync(&app, database.inner());
     }
 
     result
@@ -1335,6 +1349,8 @@ pub async fn start_incremental_gmail_sync(
 
     if let Err(error) = &result {
         persist_command_error(&database, account_id, error);
+    } else {
+        schedule_extraction_after_sync(&app, database.inner());
     }
 
     result

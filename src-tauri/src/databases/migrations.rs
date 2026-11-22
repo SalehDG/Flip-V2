@@ -1,6 +1,6 @@
 use rusqlite::{Connection, Result};
 
-const CURRENT_VERSION: i64 = 3;
+const CURRENT_VERSION: i64 = 5;
 
 pub fn run(connection: &mut Connection) -> Result<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -229,6 +229,81 @@ pub fn run(connection: &mut Connection) -> Result<()> {
         transaction.commit()?;
     }
 
+    if version < 4 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "ALTER TABLE transactions ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE transactions ADD COLUMN last_attempt_at TEXT;
+             ALTER TABLE transactions ADD COLUMN last_error TEXT;
+             CREATE INDEX IF NOT EXISTS idx_transactions_retry_status
+                ON transactions(status, attempt_count);
+             CREATE INDEX IF NOT EXISTS idx_processing_logs_transaction
+                ON processing_logs(transaction_id, created_at DESC);"
+        )?;
+        transaction.pragma_update(None, "user_version", 4)?;
+        transaction.commit()?;
+    }
+
+
+    // Version 5 repairs extraction metadata from earlier Phase 2 builds.
+    // Some v4 databases used retry_count, while newer extraction code expects attempt_count.
+    // This migration is idempotent and preserves the existing retry values.
+    if version < 5 {
+        let transaction = connection.transaction()?;
+
+        let has_retry_count: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('transactions') WHERE name='retry_count')",
+            [],
+            |row| row.get(0),
+        )?;
+        let has_attempt_count: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('transactions') WHERE name='attempt_count')",
+            [],
+            |row| row.get(0),
+        )?;
+        let has_last_attempt_at: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('transactions') WHERE name='last_attempt_at')",
+            [],
+            |row| row.get(0),
+        )?;
+        let has_last_error: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('transactions') WHERE name='last_error')",
+            [],
+            |row| row.get(0),
+        )?;
+
+        if has_retry_count && !has_attempt_count {
+            transaction.execute_batch("ALTER TABLE transactions RENAME COLUMN retry_count TO attempt_count;")?;
+        } else if !has_attempt_count {
+            transaction.execute_batch("ALTER TABLE transactions ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;")?;
+        } else if has_retry_count {
+            // If both columns exist, retain the larger retry value before removing the legacy column.
+            // Drop the old retry index first because it may still reference retry_count.
+            transaction.execute_batch(
+                "DROP INDEX IF EXISTS idx_transactions_retry_status;
+                 UPDATE transactions SET attempt_count=MAX(attempt_count, retry_count);
+                 ALTER TABLE transactions DROP COLUMN retry_count;"
+            )?;
+        }
+
+        if !has_last_attempt_at {
+            transaction.execute_batch("ALTER TABLE transactions ADD COLUMN last_attempt_at TEXT;")?;
+        }
+        if !has_last_error {
+            transaction.execute_batch("ALTER TABLE transactions ADD COLUMN last_error TEXT;")?;
+        }
+
+        transaction.execute_batch(
+            "DROP INDEX IF EXISTS idx_transactions_retry_status;
+             CREATE INDEX idx_transactions_retry_status ON transactions(status, attempt_count);
+             CREATE INDEX IF NOT EXISTS idx_processing_logs_transaction
+                ON processing_logs(transaction_id, created_at DESC);"
+        )?;
+        transaction.pragma_update(None, "user_version", 5)?;
+        transaction.commit()?;
+    }
+
+
     if version > CURRENT_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
     }
@@ -254,15 +329,51 @@ mod tests {
     }
 
     #[test]
-    fn migration_sets_database_version_to_three() {
+    fn migration_sets_database_version_to_five() {
         let connection = create_test_database();
 
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
 
-        assert_eq!(version, 3);
+        assert_eq!(version, 5);
     }
+
+    #[test]
+    fn migration_adds_extraction_retry_metadata() {
+        let connection = create_test_database();
+        for column in ["attempt_count", "last_attempt_at", "last_error"] {
+            let exists: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('transactions') WHERE name=?1)",
+                [column],
+                |row| row.get(0),
+            ).unwrap();
+            assert!(exists, "Column {column} missing");
+        }
+    }
+
+    #[test]
+    fn migration_repairs_legacy_v4_retry_metadata() {
+        let mut connection = create_test_database();
+        connection.execute_batch(
+            "ALTER TABLE transactions RENAME COLUMN attempt_count TO retry_count;
+             ALTER TABLE transactions DROP COLUMN last_error;
+             PRAGMA user_version = 4;"
+        ).unwrap();
+
+        run(&mut connection).unwrap();
+
+        let columns: Vec<String> = connection.prepare("PRAGMA table_info(transactions)")
+            .unwrap().query_map([], |row| row.get(1)).unwrap()
+            .collect::<Result<Vec<_>, _>>().unwrap();
+        assert!(columns.iter().any(|c| c == "attempt_count"));
+        assert!(columns.iter().any(|c| c == "last_error"));
+        assert!(!columns.iter().any(|c| c == "retry_count"));
+
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, 5);
+    }
+
 
     #[test]
     fn migration_creates_all_required_tables() {
@@ -307,7 +418,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
 
-        assert_eq!(version, 3);
+        assert_eq!(version, 5);
     }
 
     #[test]
