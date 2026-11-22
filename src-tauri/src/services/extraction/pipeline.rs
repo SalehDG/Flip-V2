@@ -220,36 +220,32 @@ pub fn correct_transfer_note(database: &Database, transaction_id: i64, new_note:
         params![transaction_id, old_note, cleaned],
     ).map_err(db_err)?;
 
-    let duplicate = if let Some(id) = flip_id.as_deref() {
-        transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM transactions WHERE flip_transaction_id=?1 AND id<>?2)",
-            params![id, transaction_id], |row| row.get::<_, bool>(0),
-        ).map_err(db_err)?
-    } else { false };
-
-    let missing_fields = flip_id.is_none() || date.is_none() || recipient.as_deref().unwrap_or_default().trim().is_empty() || amount.is_none();
-    if duplicate {
-        mark_existing_duplicate_rows(&transaction, flip_id.as_deref().unwrap_or_default(), transaction_id).map_err(db_err)?;
-    }
-    let (status, reason) = if duplicate {
-        ("Duplicate Review", Some("Flip Transaction ID terdeteksi duplikat."))
-    } else if missing_fields {
-        ("Needs Review", Some("Field transaksi wajib belum lengkap; Catatan Transfer telah dikoreksi."))
-    } else {
-        ("Completed", None)
-    };
     transaction.execute(
-        "UPDATE transactions SET transfer_note=?1, status=?2, review_reason=?3,
-            last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?4",
-        params![cleaned, status, reason, transaction_id],
+        "UPDATE transactions SET transfer_note=?1, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
+        params![cleaned, transaction_id],
+    ).map_err(db_err)?;
+    let merged = if let Some(id) = flip_id.as_deref() {
+        merge_duplicate_transactions(&transaction, id).map_err(db_err)?
+    } else { None };
+    let (survivor_id, status) = if let Some(merged) = merged {
+        merged
+    } else {
+        let missing_fields = flip_id.is_none() || date.as_deref().unwrap_or_default().trim().is_empty()
+            || recipient.as_deref().unwrap_or_default().trim().is_empty() || amount.is_none();
+        (transaction_id, if missing_fields { "Needs Review".to_string() } else { "Completed".to_string() })
+    };
+    let reason = if status == "Completed" { None } else { Some("Field transaksi wajib belum lengkap; Catatan Transfer telah dikoreksi.") };
+    transaction.execute(
+        "UPDATE transactions SET status=?1, review_reason=?2, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?3",
+        params![status, reason, survivor_id],
     ).map_err(db_err)?;
     transaction.execute(
         "INSERT INTO processing_logs (transaction_id, process_type, status, error_message)
          VALUES (?1, 'manual-correction', ?2, ?3)",
-        params![transaction_id, status, reason],
+        params![survivor_id, status, reason],
     ).map_err(db_err)?;
     transaction.commit().map_err(db_err)?;
-    Ok(status.to_string())
+    Ok(status)
 }
 
 
@@ -383,11 +379,12 @@ fn claim_transaction(database: &Database, id: i64, automatic: bool) -> Result<Op
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     ).optional().map_err(db_err)?;
     let Some((account_id, message_id, subject, payload_json)) = row else { transaction.commit().map_err(db_err)?; return Ok(None); };
+    // Retrying must never erase previously extracted/corrected transaction data.
+    // Keep fields intact while processing; successful extraction may replace them,
+    // while partial/review results use COALESCE to retain existing values.
     transaction.execute(
         "UPDATE transactions SET status='Parsed',
             attempt_count=CASE WHEN ?1=1 THEN attempt_count+1 ELSE 0 END,
-            flip_transaction_id=NULL, transaction_date=NULL, recipient_name=NULL,
-            amount=NULL, transfer_note=NULL, ocr_raw_result=NULL, png_path=NULL,
             last_attempt_at=CURRENT_TIMESTAMP, review_reason=NULL, last_error=NULL,
             updated_at=CURRENT_TIMESTAMP WHERE id=?2",
         params![automatic, id],
@@ -404,9 +401,13 @@ fn claim_transaction(database: &Database, id: i64, automatic: bool) -> Result<Op
 
 fn save_parsed_fields(database: &Database, id: i64, parsed: &super::email_parser::EmailTransactionFields) -> Result<(), String> {
     let connection = database.connection.lock().map_err(lock_err)?;
+    // Partial re-extraction must not overwrite previously stored values with NULL.
+    // Only newly parsed non-NULL fields replace the existing transaction fields.
     connection.execute(
-        "UPDATE transactions SET flip_transaction_id=?1, transaction_date=?2,
-            recipient_name=?3, amount=?4, updated_at=CURRENT_TIMESTAMP WHERE id=?5",
+        "UPDATE transactions SET flip_transaction_id=COALESCE(?1, flip_transaction_id),
+            transaction_date=COALESCE(?2, transaction_date),
+            recipient_name=COALESCE(?3, recipient_name),
+            amount=COALESCE(?4, amount), updated_at=CURRENT_TIMESTAMP WHERE id=?5",
         params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount, id],
     ).map_err(db_err)?;
     Ok(())
@@ -464,43 +465,38 @@ fn finish_review(
 ) -> Result<String, String> {
     let mut connection = database.connection.lock().map_err(lock_err)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
-    let duplicate = if let Some(id) = flip_id {
-        transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM transactions WHERE flip_transaction_id=?1 AND id<>?2)",
-            params![id, item.id],
-            |row| row.get::<_, bool>(0),
-        ).map_err(db_err)?
+    transaction.execute(
+        "UPDATE transactions SET flip_transaction_id=COALESCE(?1, flip_transaction_id),
+            transaction_date=COALESCE(?2, transaction_date), recipient_name=COALESCE(?3, recipient_name),
+            amount=COALESCE(?4, amount), png_path=COALESCE(?5, png_path), last_error=?6,
+            updated_at=CURRENT_TIMESTAMP WHERE id=?7",
+        params![flip_id, date, recipient, amount, png_path, error, item.id],
+    ).map_err(db_err)?;
+
+    let merged = if let Some(id) = flip_id.filter(|value| !value.trim().is_empty()) {
+        merge_duplicate_transactions(&transaction, id).map_err(db_err)?
     } else {
-        false
+        None
     };
-    if duplicate {
-        mark_existing_duplicate_rows(&transaction, flip_id.unwrap_or_default(), item.id).map_err(db_err)?;
-    }
-    let status = if duplicate { "Duplicate Review" } else { "Needs Review" };
-    let final_reason = if duplicate {
-        Some(match reason {
-            Some(reason) if !reason.trim().is_empty() => format!("{reason} Flip Transaction ID terdeteksi pada Message lain."),
-            _ => "Flip Transaction ID terdeteksi pada Message lain.".to_string(),
-        })
+    let (survivor_id, status) = merged.unwrap_or((item.id, "Needs Review".to_string()));
+    let final_reason = if status == "Completed" {
+        None
     } else {
-        reason.map(|value| value.to_string())
+        reason.map(|value| value.to_string()).or_else(|| Some("Data transaksi belum lengkap setelah merge.".to_string()))
     };
     transaction.execute(
-        "UPDATE transactions SET status=?1, review_reason=?2,
-            flip_transaction_id=COALESCE(?3, flip_transaction_id),
-            transaction_date=COALESCE(?4, transaction_date), recipient_name=COALESCE(?5, recipient_name),
-            amount=COALESCE(?6, amount), png_path=COALESCE(?7, png_path), last_error=?8,
-            updated_at=CURRENT_TIMESTAMP WHERE id=?9",
-        params![status, final_reason, flip_id, date, recipient, amount, png_path, error, item.id],
+        "UPDATE transactions SET status=?1, review_reason=?2, last_error=?3,
+            updated_at=CURRENT_TIMESTAMP WHERE id=?4",
+        params![status, final_reason, error, survivor_id],
     ).map_err(db_err)?;
     transaction.execute(
         "INSERT INTO processing_logs (gmail_account_id, transaction_id, process_type, status, error_message)
          VALUES (?1, ?2, 'extraction', ?3, ?4)",
-        params![item.account_id, item.id, status, final_reason],
+        params![item.account_id, survivor_id, status, final_reason],
     ).map_err(db_err)?;
     transaction.commit().map_err(db_err)?;
-    emit_progress(app, item.id, status, final_reason.as_deref());
-    Ok(status.to_string())
+    emit_progress(app, survivor_id, &status, final_reason.as_deref());
+    Ok(status)
 }
 
 fn finalize_with_duplicate_check(
@@ -514,29 +510,106 @@ fn finalize_with_duplicate_check(
 ) -> Result<Option<String>, String> {
     let mut connection = database.connection.lock().map_err(lock_err)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
-    let duplicate: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM transactions WHERE flip_transaction_id=?1 AND id<>?2 AND flip_transaction_id IS NOT NULL)",
-        params![parsed.transaction_id, item.id], |row| row.get(0),
-    ).map_err(db_err)?;
-    if duplicate {
-        mark_existing_duplicate_rows(&transaction, parsed.transaction_id.as_deref().unwrap_or_default(), item.id).map_err(db_err)?;
-    }
-    let status = if duplicate { "Duplicate Review" } else { "Completed" };
-    let reason = if duplicate { Some("Flip Transaction ID terdeteksi pada Message lain." ) } else { None };
     transaction.execute(
-        "UPDATE transactions SET flip_transaction_id=?1, transaction_date=?2, recipient_name=?3,
-            amount=?4, transfer_note=?5, ocr_raw_result=?6, png_path=?7, status=?8,
-            review_reason=?9, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?10",
-        params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount, transfer_note, raw_text, image_path, status, reason, item.id],
+        "UPDATE transactions SET flip_transaction_id=COALESCE(?1, flip_transaction_id),
+            transaction_date=COALESCE(?2, transaction_date), recipient_name=COALESCE(?3, recipient_name),
+            amount=COALESCE(?4, amount), transfer_note=COALESCE(?5, transfer_note),
+            ocr_raw_result=COALESCE(?6, ocr_raw_result), png_path=COALESCE(?7, png_path),
+            last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?8",
+        params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount, transfer_note, raw_text, image_path, item.id],
+    ).map_err(db_err)?;
+    let merged = merge_duplicate_transactions(&transaction, parsed.transaction_id.as_deref().unwrap_or_default()).map_err(db_err)?;
+    let (survivor_id, status) = merged.unwrap_or((item.id, "Completed".to_string()));
+    let reason = if status == "Needs Review" { Some("Data transaksi belum lengkap setelah merge.") } else { None };
+    transaction.execute(
+        "UPDATE transactions SET status=?1, review_reason=?2, last_error=NULL,
+            updated_at=CURRENT_TIMESTAMP WHERE id=?3",
+        params![status, reason, survivor_id],
     ).map_err(db_err)?;
     transaction.execute(
         "INSERT INTO processing_logs (gmail_account_id, transaction_id, process_type, status, error_message)
          VALUES (?1, ?2, 'extraction', ?3, ?4)",
-        params![item.account_id, item.id, status, reason],
+        params![item.account_id, survivor_id, status, reason],
     ).map_err(db_err)?;
     transaction.commit().map_err(db_err)?;
-    emit_progress(app, item.id, status, reason);
-    Ok(Some(status.to_string()))
+    emit_progress(app, survivor_id, &status, reason);
+    Ok(Some(status))
+}
+
+
+/// Merge all records sharing a Flip transaction ID into one transaction row.
+/// Keeps the most complete row (then the oldest row) as the survivor, fills its
+/// missing fields from the others, migrates histories/logs, and deletes extras.
+fn merge_duplicate_transactions(
+    transaction: &Transaction<'_>,
+    flip_transaction_id: &str,
+) -> Result<Option<(i64, String)>, rusqlite::Error> {
+    if flip_transaction_id.trim().is_empty() { return Ok(None); }
+    type MergeRow = (i64, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, Option<String>);
+    let mut statement = transaction.prepare(
+        "SELECT id, flip_transaction_id, transaction_date, recipient_name, amount, transfer_note,
+                ocr_raw_result, png_path, status, review_reason, last_error, first_copied_at,
+                last_copied_at, retention_until, attempt_count, last_attempt_at
+         FROM transactions WHERE flip_transaction_id=?1 ORDER BY id ASC"
+    )?;
+    let rows = statement.query_map([flip_transaction_id], |row| Ok((
+        row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?,
+        row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?, row.get(11)?,
+        row.get(12)?, row.get(13)?, row.get(14)?, row.get(15)?,
+    )))?.collect::<Result<Vec<MergeRow>, _>>()?;
+    drop(statement);
+    if rows.len() < 2 { return Ok(None); }
+
+    let completeness = |row: &MergeRow| -> usize {
+        [row.1.as_deref(), row.2.as_deref(), row.3.as_deref(), row.4.map(|_| "present"), row.5.as_deref()]
+            .iter().filter(|value| value.is_some_and(|text| !text.trim().is_empty())).count()
+    };
+    let mut ordered = rows;
+    ordered.sort_by(|a, b| completeness(b).cmp(&completeness(a))
+        .then_with(|| (b.8 == "Completed").cmp(&(a.8 == "Completed")))
+        .then_with(|| a.0.cmp(&b.0)));
+    let survivor = ordered.remove(0);
+    let survivor_id = survivor.0;
+    let mut fields: [Option<String>; 14] = [
+        survivor.1.clone(), survivor.2.clone(), survivor.3.clone(), survivor.4.map(|v| v.to_string()),
+        survivor.5.clone(), survivor.6.clone(), survivor.7.clone(), survivor.9.clone(), survivor.10.clone(),
+        survivor.11.clone(), survivor.12.clone(), survivor.13.clone(), Some(survivor.14.to_string()), survivor.15.clone(),
+    ];
+    for other in &ordered {
+        let sources: [Option<String>; 14] = [
+            other.1.clone(), other.2.clone(), other.3.clone(), other.4.map(|v| v.to_string()),
+            other.5.clone(), other.6.clone(), other.7.clone(), other.9.clone(), other.10.clone(),
+            other.11.clone(), other.12.clone(), other.13.clone(), Some(other.14.to_string()), other.15.clone(),
+        ];
+        for index in 0..fields.len() {
+            if fields[index].as_deref().map_or(true, |v| v.trim().is_empty()) {
+                if sources[index].as_deref().map_or(false, |v| !v.trim().is_empty()) {
+                    fields[index] = sources[index].clone();
+                }
+            }
+        }
+        transaction.execute("UPDATE processing_logs SET transaction_id=?1 WHERE transaction_id=?2", params![survivor_id, other.0])?;
+        transaction.execute("UPDATE correction_history SET transaction_id=?1 WHERE transaction_id=?2", params![survivor_id, other.0])?;
+        transaction.execute("DELETE FROM transactions WHERE id=?1", [other.0])?;
+    }
+    let amount = fields[3].as_deref().and_then(|v| v.parse::<i64>().ok());
+    let complete = fields[0].as_deref().is_some_and(|v| !v.trim().is_empty())
+        && fields[1].as_deref().is_some_and(|v| !v.trim().is_empty())
+        && fields[2].as_deref().is_some_and(|v| !v.trim().is_empty())
+        && amount.is_some()
+        && fields[4].as_deref().is_some_and(|v| !v.trim().is_empty());
+    let status = if complete { "Completed" } else { "Needs Review" };
+    transaction.execute(
+        "UPDATE transactions SET flip_transaction_id=?1, transaction_date=?2, recipient_name=?3,
+            amount=?4, transfer_note=?5, ocr_raw_result=?6, png_path=?7, status=?8,
+            review_reason=CASE WHEN ?8='Completed' THEN NULL ELSE 'Data transaksi belum lengkap setelah merge.' END,
+            last_error=NULL, first_copied_at=COALESCE(first_copied_at, ?9),
+            last_copied_at=COALESCE(last_copied_at, ?10), retention_until=COALESCE(retention_until, ?11),
+            attempt_count=MAX(attempt_count, ?12), last_attempt_at=COALESCE(last_attempt_at, ?13),
+            updated_at=CURRENT_TIMESTAMP WHERE id=?14",
+        params![fields[0], fields[1], fields[2], amount, fields[4], fields[5], fields[6], status, fields[9], fields[10], fields[11], fields[12].as_deref().and_then(|v| v.parse::<i64>().ok()).unwrap_or(0), fields[13], survivor_id],
+    )?;
+    Ok(Some((survivor_id, status.to_string())))
 }
 
 
@@ -642,21 +715,19 @@ fn decode_base64url(value: &str) -> Result<Vec<u8>, String> {
 }
 
 
-fn decoded_email_body(message_or_payload: &Value) -> String {
-    // Gmail sync stores the full Message object. MIME data lives under `payload`.
-    // Also accept a raw MIME payload for focused unit tests and other callers.
-    let mime_payload = message_or_payload.get("payload").unwrap_or(message_or_payload);
+fn decoded_email_body(message: &Value) -> String {
+    // Gmail API stores MIME parts inside Message.payload. Diagnostic and test
+    // callers may pass a MIME payload directly, so support both structures.
+    let mime_root = message.get("payload").unwrap_or(message);
     let mut plain = Vec::new();
     let mut html = Vec::new();
-    collect_body_parts(mime_payload, &mut plain, &mut html);
+    collect_body_parts(mime_root, &mut plain, &mut html);
     if !plain.is_empty() { plain.join("\n") } else { html.join("\n") }
 }
 
 
 fn collect_body_parts(value: &Value, plain: &mut Vec<String>, html: &mut Vec<String>) {
     let mime = value.get("mimeType").and_then(Value::as_str).unwrap_or_default();
-    // Gmail includes `body.attachmentId: null` on ordinary body parts in some
-    // payloads. Presence of the key alone must not classify the body as an attachment.
     let has_attachment_id = value.pointer("/body/attachmentId")
         .and_then(Value::as_str)
         .is_some_and(|attachment_id| !attachment_id.trim().is_empty());
@@ -701,11 +772,7 @@ fn html_to_text(html: &str) -> String {
                 if trimmed.starts_with("script") { skip_block = Some("script".into()); }
                 if trimmed.starts_with("style") { skip_block = Some("style".into()); }
                 if trimmed.starts_with("/script") || trimmed.starts_with("/style") { skip_block = None; }
-                // Keep boundaries between HTML block elements. Flip receipt labels and
-                // values are placed in adjacent divs and must not concatenate.
-                let block_tag = trimmed.trim_start_matches('/');
-                if ["br", "p", "div", "li", "tr", "td", "table", "h1", "h2", "h3"].contains(&block_tag)
-                    && (trimmed.starts_with('/') || !trimmed.ends_with('/')) {
+                if ["br", "p", "/p", "div", "/div", "li", "/li", "tr", "/tr", "/td", "/table", "/h1", "/h2", "/h3"].contains(&trimmed.as_str()) {
                     output.push('\n');
                 }
             } else if tag_name.len() < 40 { tag_name.push(ch); }
@@ -733,61 +800,6 @@ fn db_err(error: rusqlite::Error) -> String { format!("Database error: {error}")
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn flip_receipt_html_preserves_label_value_boundaries() {
-        let html = r#"<div class="section__content__detail"><div>ID Transaksi</div><div>#ST261121135251582SV50K</div></div><div><div>Waktu Terkirim</div><div>21 Nov 2026 13:53 WIB</div></div><div><div>Nama Tujuan</div><div>MUHAMAD ANWAR GUNAWAN</div></div><div><div>Nominal</div><div>Rp18.975.000</div></div>"#;
-        let text = html_to_text(html);
-        let parsed = parse_flip_email(None, &text);
-        assert_eq!(parsed.transaction_id.as_deref(), Some("ST261121135251582SV50K"));
-        assert_eq!(parsed.transaction_date.as_deref(), Some("21/11/2026"));
-        assert_eq!(parsed.recipient_name.as_deref(), Some("MUHAMAD ANWAR GUNAWAN"));
-        assert_eq!(parsed.amount, Some(18_975_000));
-        assert!(parsed.review_reasons.is_empty(), "unexpected review reasons: {:?}", parsed.review_reasons);
-    }
-
-
-    #[test]
-    fn reads_html_body_when_attachment_id_is_null() {
-        let payload = serde_json::json!({
-            "mimeType": "text/html",
-            "body": {
-                "attachmentId": null,
-                "data": "PGRpdj5JRCBUcmFuc2Frc2k8L2Rpdj48ZGl2PiNTVDI2MTEyMTEzNTI1MTU4MlNWNTBLPC9kaXY-PGRpdj5XYWt0dSBUZXJraXJpbTwvZGl2PjxkaXY-MjEgTm92IDIwMjYgMTM6NTMgV0lCPC9kaXY-PGRpdj5OYW1hIFR1anVhbjwvZGl2PjxkaXY-TVVIQU1BRCBBTldBUiBHVU5BV0FOPC9kaXY-PGRpdj5Ob21pbmFsPC9kaXY-PGRpdj5ScDE4Ljk3NS4wMDA8L2Rpdj4"
-            }
-        });
-        let body = decoded_email_body(&payload);
-        let parsed = parse_flip_email(None, &body);
-        assert_eq!(parsed.transaction_id.as_deref(), Some("ST261121135251582SV50K"));
-        assert_eq!(parsed.transaction_date.as_deref(), Some("21/11/2026"));
-        assert_eq!(parsed.recipient_name.as_deref(), Some("MUHAMAD ANWAR GUNAWAN"));
-        assert_eq!(parsed.amount, Some(18_975_000));
-        assert!(parsed.review_reasons.is_empty(), "unexpected review reasons: {:?}", parsed.review_reasons);
-    }
-
-    #[test]
-    fn extracts_body_from_full_gmail_message_envelope() {
-        // Gmail sync stores a full Message object; its MIME tree is nested in payload.
-        let payload = serde_json::json!({
-            "id": "sample-message",
-            "threadId": "sample-thread",
-            "payload": {
-                "mimeType": "text/html",
-                "body": {
-                    "attachmentId": null,
-                    "data": "PGRpdj5JRCBUcmFuc2Frc2k8L2Rpdj48ZGl2PiNTVDI2MTEyMTEzNTI1MTU4MlNWNTBLPC9kaXY-PGRpdj5XYWt0dSBUZXJraXJpbTwvZGl2PjxkaXY-MjEgTm92IDIwMjYgMTM6NTMgV0lCPC9kaXY-PGRpdj5OYW1hIFR1anVhbjwvZGl2PjxkaXY-TVVIQU1BRCBBTldBUiBHVU5BV0FOPC9kaXY-PGRpdj5Ob21pbmFsPC9kaXY-PGRpdj5ScDE4Ljk3NS4wMDA8L2Rpdj4"
-                }
-            }
-        });
-        let body = decoded_email_body(&payload);
-        let parsed = parse_flip_email(None, &body);
-        assert_eq!(parsed.transaction_id.as_deref(), Some("ST261121135251582SV50K"));
-        assert_eq!(parsed.transaction_date.as_deref(), Some("21/11/2026"));
-        assert_eq!(parsed.recipient_name.as_deref(), Some("MUHAMAD ANWAR GUNAWAN"));
-        assert_eq!(parsed.amount, Some(18_975_000));
-        assert!(parsed.review_reasons.is_empty(), "unexpected review reasons: {:?}", parsed.review_reasons);
-    }
-
 
     #[test]
     fn html_conversion_removes_tags_and_script_content() {
@@ -818,6 +830,39 @@ mod tests {
         assert!(decoded_email_body(&payload).contains("Hello"));
     }
 
+    #[test]
+    fn parses_flip_html_from_full_gmail_message_with_null_attachment_id() {
+        let message = serde_json::json!({
+            "id": "gmail-message-test",
+            "payload": {
+                "mimeType": "multipart/mixed",
+                "parts": [
+                    {
+                        "mimeType": "text/html",
+                        "body": {
+                            "attachmentId": null,
+                            "data": "PGRpdj5JRCBUcmFuc2Frc2k8L2Rpdj48ZGl2PiNTVDI2MTEyMTEzNTI1MTU4MlNWNTBLPC9kaXY-PGRpdj5XYWt0dSBUZXJraXJpbTwvZGl2PjxkaXY-MjEgTm92IDIwMjYgMTM6NTMgV0lCPC9kaXY-PGRpdj5OYW1hIFR1anVhbjwvZGl2PjxkaXY-TVVIQU1BRCBBTldBUiBHVU5BV0FOPC9kaXY-PGRpdj5Ob21pbmFsPC9kaXY-PGRpdj5ScDE4Ljk3NS4wMDA8L2Rpdj4"
+                        }
+                    },
+                    {
+                        "mimeType": "image/png",
+                        "filename": "flip-receipt.png",
+                        "body": { "attachmentId": "attachment-123" }
+                    }
+                ]
+            }
+        });
+
+        let body = decoded_email_body(&message);
+        let parsed = parse_flip_email(None, &body);
+        assert_eq!(parsed.transaction_id.as_deref(), Some("ST261121135251582SV50K"));
+        assert_eq!(parsed.transaction_date.as_deref(), Some("21/11/2026"));
+        assert_eq!(parsed.recipient_name.as_deref(), Some("MUHAMAD ANWAR GUNAWAN"));
+        assert_eq!(parsed.amount, Some(18_975_000));
+        assert!(parsed.review_reasons.is_empty(), "Unexpected review reasons: {:?}; body={body:?}", parsed.review_reasons);
+    }
+
+
     fn create_test_database() -> (Database, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!("flip-extraction-test-{}.sqlite", uuid::Uuid::new_v4()));
         let database = Database::new(&path).unwrap();
@@ -846,7 +891,7 @@ mod tests {
 
 
     #[test]
-    fn manual_claim_clears_stale_fields_and_resets_auto_retry_budget() {
+    fn manual_retry_preserves_existing_extracted_fields_and_resets_retry_budget() {
         let (database, path) = create_test_database();
         {
             let connection = database.connection.lock().unwrap();
@@ -860,12 +905,52 @@ mod tests {
         assert!(claim_transaction(&database, 1, false).unwrap().is_some());
         {
             let connection = database.connection.lock().unwrap();
-            let state: (String, i64, Option<String>, Option<String>) = connection.query_row(
-                "SELECT status,attempt_count,flip_transaction_id,transfer_note FROM transactions WHERE id=1",
+            let state: (String, i64, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>) = connection.query_row(
+                "SELECT status,attempt_count,flip_transaction_id,transaction_date,recipient_name,amount,transfer_note,ocr_raw_result FROM transactions WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)),
+            ).unwrap();
+            assert_eq!(state, (
+                "Parsed".into(), 0, Some("ST12345678".into()), Some("01/01/2026".into()),
+                Some("Old Name".into()), Some(5000), Some("Old Note".into()), Some("Old OCR".into())
+            ));
+            let png_path: Option<String> = connection.query_row("SELECT png_path FROM transactions WHERE id=1", [], |row| row.get(0)).unwrap();
+            assert_eq!(png_path, Some("old.png".into()));
+        }
+        remove_test_database(database, &path);
+    }
+
+
+    #[test]
+    fn partial_parse_does_not_clear_existing_transaction_fields() {
+        let (database, path) = create_test_database();
+        {
+            let connection = database.connection.lock().unwrap();
+            connection.execute(
+                "UPDATE transactions SET flip_transaction_id='ST12345678',
+                 transaction_date='01/01/2026',recipient_name='Old Name',amount=5000 WHERE id=1",
+                [],
+            ).unwrap();
+        }
+        let partial = super::email_parser::EmailTransactionFields {
+            transaction_id: None,
+            transaction_date: Some("02/01/2026".to_string()),
+            recipient_name: None,
+            amount: None,
+            review_reasons: vec!["partial parse".to_string()],
+        };
+        save_parsed_fields(&database, 1, &partial).unwrap();
+        {
+            let connection = database.connection.lock().unwrap();
+            let fields: (Option<String>, Option<String>, Option<String>, Option<i64>) = connection.query_row(
+                "SELECT flip_transaction_id,transaction_date,recipient_name,amount FROM transactions WHERE id=1",
                 [],
                 |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
             ).unwrap();
-            assert_eq!(state, ("Parsed".into(), 0, None, None));
+            assert_eq!(fields, (
+                Some("ST12345678".into()), Some("02/01/2026".into()),
+                Some("Old Name".into()), Some(5000),
+            ));
         }
         remove_test_database(database, &path);
     }
@@ -886,6 +971,54 @@ mod tests {
             assert_eq!(count, 3);
         }
         assert!(claim_transaction(&database, 1, true).unwrap().is_none());
+        remove_test_database(database, &path);
+    }
+
+
+
+    #[test]
+    fn duplicate_transaction_rows_are_merged_into_one_completed_record() {
+        let (database, path) = create_test_database();
+        {
+            let connection = database.connection.lock().unwrap();
+            connection.execute(
+                "UPDATE transactions SET flip_transaction_id='ST-MERGE-1', transaction_date='21/11/2026',
+                 recipient_name=NULL, amount=856000, transfer_note='TR25 belanja kelapa dua', status='Needs Review' WHERE id=1",
+                [],
+            ).unwrap();
+            connection.execute(
+                "INSERT INTO gmail_messages(gmail_account_id,gmail_message_id,gmail_thread_id,payload_json) VALUES (1,'message-2','thread-2','{}')",
+                [],
+            ).unwrap();
+            connection.execute(
+                "INSERT INTO transactions(gmail_account_id,gmail_message_id,flip_transaction_id,recipient_name,status)
+                 VALUES (1,'message-2','ST-MERGE-1','EDDY KURNIAWAN','Needs Review')",
+                [],
+            ).unwrap();
+            connection.execute(
+                "INSERT INTO processing_logs(transaction_id,process_type,status) VALUES (2,'test-log','Needs Review')",
+                [],
+            ).unwrap();
+        }
+        {
+            let mut connection = database.connection.lock().unwrap();
+            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+            let result = merge_duplicate_transactions(&transaction, "ST-MERGE-1").unwrap();
+            assert_eq!(result, Some((1, "Completed".to_string())));
+            transaction.commit().unwrap();
+        }
+        {
+            let connection = database.connection.lock().unwrap();
+            let count: i64 = connection.query_row("SELECT COUNT(*) FROM transactions WHERE flip_transaction_id='ST-MERGE-1'", [], |row| row.get(0)).unwrap();
+            assert_eq!(count, 1);
+            let fields: (Option<String>, Option<String>, Option<i64>, Option<String>, String) = connection.query_row(
+                "SELECT transaction_date,recipient_name,amount,transfer_note,status FROM transactions WHERE id=1",
+                [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+            ).unwrap();
+            assert_eq!(fields, (Some("21/11/2026".into()), Some("EDDY KURNIAWAN".into()), Some(856000), Some("TR25 belanja kelapa dua".into()), "Completed".into()));
+            let moved_log: i64 = connection.query_row("SELECT COUNT(*) FROM processing_logs WHERE transaction_id=1 AND process_type='test-log'", [], |row| row.get(0)).unwrap();
+            assert_eq!(moved_log, 1);
+        }
         remove_test_database(database, &path);
     }
 
