@@ -255,6 +255,86 @@ pub fn correct_transfer_note(database: &Database, transaction_id: i64, new_note:
 }
 
 
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessingLogRecord {
+    pub id: i64,
+    pub transaction_id: Option<i64>,
+    pub account_email: Option<String>,
+    pub process_type: String,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub created_at: String,
+}
+
+
+/// Applies a complete manual transaction correction and writes an audit entry for each changed field.
+pub fn correct_transaction_fields(
+    database: &Database,
+    transaction_id: i64,
+    transaction_date: &str,
+    recipient_name: &str,
+    flip_transaction_id: &str,
+    amount: i64,
+    transfer_note: &str,
+) -> Result<String, String> {
+    let date = transaction_date.trim();
+    let recipient = recipient_name.trim();
+    let flip_id = flip_transaction_id.trim();
+    let note = transfer_note.trim();
+    if date.is_empty() || recipient.is_empty() || flip_id.is_empty() || amount <= 0 {
+        return Err("Tanggal, nama penerima, Transaction ID, dan nominal harus valid.".into());
+    }
+    let normalized_date = if date.contains('/') {
+        let parts: Vec<_> = date.split('/').collect();
+        if parts.len() == 3 && parts[0].len() == 2 && parts[1].len() == 2 && parts[2].len() == 4 {
+            format!("{}/{}/{}", parts[0], parts[1], parts[2])
+        } else { return Err("Format tanggal tidak valid. Gunakan YYYY-MM-DD.".into()); }
+    } else if date.len() == 10 && date.chars().nth(4) == Some('-') {
+        format!("{}/{}/{}", &date[8..10], &date[5..7], &date[0..4])
+    } else { return Err("Format tanggal tidak valid. Gunakan YYYY-MM-DD.".into()); };
+
+    let mut connection = database.connection.lock().map_err(lock_err)?;
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
+    let old: Option<(Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, String)> = tx.query_row(
+        "SELECT transaction_date, recipient_name, flip_transaction_id, amount, transfer_note, status FROM transactions WHERE id=?1",
+        [transaction_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))
+    ).optional().map_err(db_err)?;
+    let (old_date, old_recipient, old_flip, old_amount, old_note, current_status) = old.ok_or_else(|| format!("Transaksi {transaction_id} tidak ditemukan."))?;
+    if !matches!(current_status.as_str(), "Completed" | "Needs Review" | "Duplicate Review" | "Failed") {
+        return Err(format!("Transaksi tidak dapat dikoreksi dari status {current_status}."));
+    }
+    let values = [
+        ("transaction_date", old_date.unwrap_or_default(), normalized_date.clone()),
+        ("recipient_name", old_recipient.unwrap_or_default(), recipient.to_string()),
+        ("flip_transaction_id", old_flip.unwrap_or_default(), flip_id.to_string()),
+        ("amount", old_amount.map(|v| v.to_string()).unwrap_or_default(), amount.to_string()),
+        ("transfer_note", old_note.unwrap_or_default(), note.to_string()),
+    ];
+    for (field, old_value, new_value) in values.iter() {
+        if old_value != new_value {
+            tx.execute("INSERT INTO correction_history (transaction_id,field_name,old_value,new_value) VALUES (?1,?2,?3,?4)",
+                params![transaction_id, field, old_value, new_value]).map_err(db_err)?;
+        }
+    }
+    let duplicate: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM transactions WHERE flip_transaction_id=?1 AND id<>?2)", params![flip_id,transaction_id], |row| row.get(0)).map_err(db_err)?;
+    let status = if duplicate { "Duplicate Review" } else { "Completed" };
+    let reason = if duplicate { Some("Flip Transaction ID terdeteksi duplikat setelah koreksi." ) } else { None };
+    tx.execute("UPDATE transactions SET transaction_date=?1,recipient_name=?2,flip_transaction_id=?3,amount=?4,transfer_note=?5,status=?6,review_reason=?7,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?8",
+        params![normalized_date, recipient, flip_id, amount, note, status, reason, transaction_id]).map_err(db_err)?;
+    tx.execute("INSERT INTO processing_logs (transaction_id,process_type,status,error_message) VALUES (?1,'manual-correction',?2,?3)", params![transaction_id,status,reason]).map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    Ok(status.to_string())
+}
+
+pub fn list_processing_logs(database: &Database, limit: u32) -> Result<Vec<ProcessingLogRecord>, String> {
+    let connection = database.connection.lock().map_err(lock_err)?;
+    let mut statement = connection.prepare("SELECT l.id,l.transaction_id,a.email_address,l.process_type,l.status,l.error_message,l.created_at FROM processing_logs l LEFT JOIN transactions t ON t.id=l.transaction_id LEFT JOIN gmail_accounts a ON a.id=COALESCE(t.gmail_account_id,l.gmail_account_id) ORDER BY l.created_at DESC,l.id DESC LIMIT ?1").map_err(db_err)?;
+    let rows = statement.query_map([i64::from(limit.clamp(1,500))], |row| Ok(ProcessingLogRecord { id:row.get(0)?, transaction_id:row.get(1)?, account_email:row.get(2)?, process_type:row.get(3)?, status:row.get(4)?, error_message:row.get(5)?, created_at:row.get(6)? })).map_err(db_err)?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(db_err)
+}
+
 pub fn list_extraction_transactions(
     database: &Database,
     limit: u32,
@@ -970,7 +1050,7 @@ pub fn mark_transactions_copied(database: &Database, transaction_ids: &[i64]) ->
     let mut updated = 0usize;
     for id in transaction_ids.iter().copied().filter(|id| *id > 0) {
         updated += transaction.execute(
-            "UPDATE transactions SET first_copied_at=COALESCE(first_copied_at, strftime('%Y-%m-%d %H:%M:%f','now')), last_copied_at=strftime('%Y-%m-%d %H:%M:%f','now'), updated_at=datetime('now') WHERE id=?1 AND status IN ('Completed','Needs Review')",
+            "UPDATE transactions SET first_copied_at=COALESCE(first_copied_at, strftime('%Y-%m-%d %H:%M:%f','now')), last_copied_at=strftime('%Y-%m-%d %H:%M:%f','now'), retention_until=COALESCE(retention_until, datetime(COALESCE(first_copied_at, strftime('%Y-%m-%d %H:%M:%f','now')), '+' || COALESCE((SELECT CAST(setting_value AS INTEGER) FROM app_settings WHERE setting_key='retention_period'), 7) || ' days')), updated_at=datetime('now') WHERE id=?1 AND status IN ('Completed','Needs Review')",
             params![id],
         ).map_err(db_err)?;
     }

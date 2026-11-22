@@ -40,6 +40,24 @@ pub fn run() {
             // then checks connected accounts every 60 seconds.
             gmail_sync::monitoring::start(app.handle().clone(), database.clone(), sync_coordinator);
 
+            // Retention cleanup runs once at startup and then every 24 hours.
+            let retention_database = database.clone();
+            let retention_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let worker_database = retention_database.clone();
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        services::retention::run_cleanup(&worker_database)
+                    }).await;
+                    match result {
+                        Ok(Ok(summary)) => { let _ = retention_app.emit("flip://retention-cleanup-complete", summary); }
+                        Ok(Err(error)) => { let _ = retention_app.emit("flip://retention-cleanup-error", error); }
+                        Err(error) => { let _ = retention_app.emit("flip://retention-cleanup-error", error.to_string()); }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
+                }
+            });
+
             // System tray keeps the Gmail monitoring engine alive when the
             // dashboard window is closed. Tray menu offers explicit exit.
             let open_dashboard = MenuItem::with_id(app, "open-dashboard", "Buka Dashboard", true, None::<&str>)?;
@@ -116,9 +134,18 @@ pub fn run() {
             commands::extraction_commands::run_transaction_extraction,
             commands::extraction_commands::retry_transaction_extraction_command,
             commands::extraction_commands::correct_transaction_transfer_note,
+            commands::extraction_commands::save_transaction_correction,
+            commands::extraction_commands::get_processing_logs,
             commands::extraction_commands::get_extraction_transactions,
             commands::extraction_commands::get_extraction_status_summary,
             commands::extraction_commands::mark_transactions_copied,
+            commands::retention_commands::get_retention_settings,
+            commands::retention_commands::set_retention_settings,
+            commands::retention_commands::preview_retention_cleanup,
+            commands::retention_commands::run_retention_cleanup,
+            commands::settings_commands::get_monitoring_settings,
+            commands::settings_commands::set_monitoring_settings,
+            commands::settings_commands::get_storage_info,
             gmail_auth::oauth_session::start_gmail_oauth,
             gmail_auth::oauth_session::complete_gmail_oauth,
             gmail_auth::oauth_session::cancel_gmail_oauth,

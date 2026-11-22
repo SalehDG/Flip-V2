@@ -13,3 +13,9 @@ export interface ExtractionTransaction {
   firstCopiedAt: string | null; lastCopiedAt: string | null;
 }
 export interface ExtractionProgressEvent { transactionId: number; status: string; message: string | null; }
+
+export interface RetentionSettings { retentionDays: number; }
+export interface RetentionPreview { retentionDays: number; eligibleCount: number; oldestExpiredAt: string | null; pngFileCount: number; }
+export interface RetentionRunSummary { deletedTransactions: number; deletedPngFiles: number; failedPngDeletions: number; }
+
+export interface ProcessingLogRecord { id: number; transactionId: number | null; accountEmail: string | null; processType: string; status: string; errorMessage: string | null; createdAt: string; }

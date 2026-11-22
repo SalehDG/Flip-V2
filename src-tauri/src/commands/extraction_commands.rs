@@ -3,9 +3,9 @@ use tauri::{AppHandle, State};
 use crate::{
     databases::Database,
     services::extraction::pipeline::{
-        correct_transfer_note, get_extraction_status_summary as read_extraction_status_summary, list_extraction_transactions,
+        correct_transfer_note, correct_transaction_fields, list_processing_logs, get_extraction_status_summary as read_extraction_status_summary, list_extraction_transactions,
         retry_transaction_extraction, run_pending_extraction, mark_transactions_copied as mark_copied_records, ExtractionStatusSummary,
-        ExtractionSummary, ExtractionTransactionRecord,
+        ExtractionSummary, ExtractionTransactionRecord, ProcessingLogRecord,
     },
     services::ocr::TesseractOptions,
 };
@@ -47,6 +47,22 @@ pub fn correct_transaction_transfer_note(
     transfer_note: String,
 ) -> Result<String, String> {
     correct_transfer_note(database.inner(), transaction_id, &transfer_note)
+}
+
+
+
+#[tauri::command]
+pub fn save_transaction_correction(
+    database: State<'_, Database>, transaction_id: i64, transaction_date: String,
+    recipient_name: String, flip_transaction_id: String, amount: i64, transfer_note: String,
+) -> Result<String, String> {
+    correct_transaction_fields(database.inner(), transaction_id, &transaction_date, &recipient_name, &flip_transaction_id, amount, &transfer_note)
+}
+
+
+#[tauri::command]
+pub fn get_processing_logs(database: State<'_, Database>, limit: Option<u32>) -> Result<Vec<ProcessingLogRecord>, String> {
+    list_processing_logs(database.inner(), limit.unwrap_or(200))
 }
 
 

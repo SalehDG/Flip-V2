@@ -5,27 +5,35 @@ use crate::{
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-const POLLING_INTERVAL: Duration = Duration::from_secs(60);
-
 
 /// Starts the app-lifetime Gmail monitoring loop. The first cycle runs immediately,
-/// then subsequent cycles are spaced at the configured 60-second interval.
+/// then subsequent cycles use the persisted monitoring interval.
 pub fn start(app: AppHandle, database: Database, coordinator: SyncCoordinator) {
-    let _ = app.emit("flip://monitoring-started", serde_json::json!({
-        "intervalSeconds": POLLING_INTERVAL.as_secs()
-    }));
     tauri::async_runtime::spawn(async move {
-        let mut ticker = tokio::time::interval(POLLING_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_cycle: Option<tokio::time::Instant> = None;
         loop {
-            ticker.tick().await;
-            run_cycle(&app, &database, &coordinator).await;
+            match crate::services::settings::get_monitoring_settings(&database) {
+                Ok(config) if config.enabled => {
+                    if last_cycle.map(|last| last.elapsed() >= Duration::from_secs(config.interval_seconds as u64)).unwrap_or(true) {
+                        let _ = app.emit("flip://monitoring-started", serde_json::json!({ "intervalSeconds": config.interval_seconds }));
+                        run_cycle(&app, &database, &coordinator, config.interval_seconds).await;
+                        last_cycle = Some(tokio::time::Instant::now());
+                    }
+                }
+                Ok(config) => {
+                    let _ = app.emit("flip://monitoring-paused", serde_json::json!({ "intervalSeconds": config.interval_seconds }));
+                }
+                Err(error) => emit_monitoring_error(&app, None, error),
+            }
+            // A short wake interval makes changes to Settings responsive while
+            // preventing the sync worker from spinning or running duplicate cycles.
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     });
 }
 
 
-async fn run_cycle(app: &AppHandle, database: &Database, coordinator: &SyncCoordinator) {
+async fn run_cycle(app: &AppHandle, database: &Database, coordinator: &SyncCoordinator, interval_seconds: u32) {
     let accounts = match database.connection.lock() {
         Ok(connection) => match GmailAccountRepository::find_all(&connection) {
             Ok(accounts) => accounts,
@@ -70,7 +78,7 @@ async fn run_cycle(app: &AppHandle, database: &Database, coordinator: &SyncCoord
     }
     let _ = app.emit("flip://monitoring-cycle-complete", serde_json::json!({
         "checkedAccounts": checked_accounts,
-        "intervalSeconds": POLLING_INTERVAL.as_secs()
+        "intervalSeconds": interval_seconds
     }));
 }
 
