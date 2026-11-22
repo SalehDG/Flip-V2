@@ -329,14 +329,17 @@ fn process_one(
     if is_multi_destination_instruction_email(&body) {
         const REASON: &str = "Email instruksi transfer ke banyak tujuan, bukan bukti transaksi transfer selesai. Dilewati dari ekstraksi transaksi.";
         let connection = database.connection.lock().map_err(lock_err)?;
+        // The transactions.status CHECK constraint does not include "Skipped" yet.
+        // Keep the row in a valid terminal review state while recording the
+        // classifier outcome separately in the processing log.
         connection.execute(
-            "UPDATE transactions SET status='Skipped', review_reason=?1, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
+            "UPDATE transactions SET status='Needs Review', review_reason=?1, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
             params![REASON, item.id],
         ).map_err(db_err)?;
         drop(connection);
         log_processing(database, item.id, "email-classifier", "Skipped", Some(REASON))?;
-        emit_progress(app, item.id, "Skipped", Some(REASON));
-        return Ok(Some("Skipped".to_string()));
+        emit_progress(app, item.id, "Needs Review", Some(REASON));
+        return Ok(Some("Needs Review".to_string()));
     }
     let parsed = parse_flip_email(item.subject.as_deref(), &body);
     save_parsed_fields(database, item.id, &parsed)?;
