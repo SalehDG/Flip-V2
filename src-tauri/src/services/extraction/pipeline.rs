@@ -64,6 +64,8 @@ pub struct ExtractionTransactionRecord {
     pub last_attempt_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub first_copied_at: Option<String>,
+    pub last_copied_at: Option<String>,
 }
 
 
@@ -266,7 +268,8 @@ pub fn list_extraction_transactions(
         "SELECT t.id, t.gmail_account_id, a.email_address, t.gmail_message_id,
                 t.flip_transaction_id, t.transaction_date, t.recipient_name, t.amount,
                 t.transfer_note, t.ocr_raw_result, t.status, t.review_reason, t.last_error,
-                t.png_path, t.attempt_count, t.last_attempt_at, t.created_at, t.updated_at
+                t.png_path, t.attempt_count, t.last_attempt_at, t.created_at, t.updated_at,
+                t.first_copied_at, t.last_copied_at
          FROM transactions t JOIN gmail_accounts a ON a.id=t.gmail_account_id
          WHERE (?1 IS NULL OR t.status=?1)
          ORDER BY t.created_at DESC, t.id DESC LIMIT ?2 OFFSET ?3",
@@ -277,6 +280,7 @@ pub fn list_extraction_transactions(
         transfer_note: row.get(8)?, ocr_raw_result: row.get(9)?, status: row.get(10)?, review_reason: row.get(11)?,
         last_error: row.get(12)?, png_path: row.get(13)?, attempt_count: row.get(14)?, last_attempt_at: row.get(15)?,
         created_at: row.get(16)?, updated_at: row.get(17)?,
+        first_copied_at: row.get(18)?, last_copied_at: row.get(19)?,
     })).map_err(db_err)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
 }
@@ -966,7 +970,7 @@ pub fn mark_transactions_copied(database: &Database, transaction_ids: &[i64]) ->
     let mut updated = 0usize;
     for id in transaction_ids.iter().copied().filter(|id| *id > 0) {
         updated += transaction.execute(
-            "UPDATE transactions SET first_copied_at=COALESCE(first_copied_at, datetime('now')), last_copied_at=datetime('now'), updated_at=datetime('now') WHERE id=?1 AND status IN ('Completed','Needs Review')",
+            "UPDATE transactions SET first_copied_at=COALESCE(first_copied_at, strftime('%Y-%m-%d %H:%M:%f','now')), last_copied_at=strftime('%Y-%m-%d %H:%M:%f','now'), updated_at=datetime('now') WHERE id=?1 AND status IN ('Completed','Needs Review')",
             params![id],
         ).map_err(db_err)?;
     }

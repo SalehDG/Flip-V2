@@ -4,12 +4,14 @@ import GmailAccountTest from '../features/gmail/components/GmailAccountTest';
 import EmailHistory from '../features/email-history/components/EmailHistory';
 import Dashboard from '../features/dashboard/pages/Dashboard';
 import Transactions from '../features/transactions/pages/Transactions';
+import CopyTracking from '../features/copy-tracking/pages/CopyTracking';
 
-type AppPage = 'dashboard' | 'transactions' | 'gmail' | 'history';
+type AppPage = 'dashboard' | 'transactions' | 'copy-tracking' | 'gmail' | 'history';
 
 const navigation: { id: AppPage; label: string; icon: string }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: '◫' },
   { id: 'transactions', label: 'Transaksi', icon: '⇄' },
+  { id: 'copy-tracking', label: 'Copy Tracking', icon: '◷' },
   { id: 'gmail', label: 'Akun Gmail', icon: '✉' },
   { id: 'history', label: 'Riwayat Email', icon: '▤' },
 ];
@@ -72,6 +74,7 @@ function App() {
         <div className="page-content">
           {page === 'dashboard' ? <Dashboard onOpenTransactions={() => setPage('transactions')} />
             : page === 'transactions' ? <Transactions />
+              : page === 'copy-tracking' ? <CopyTracking />
               : page === 'gmail' ? <GmailAccountTest />
                 : <EmailHistory />}
         </div>

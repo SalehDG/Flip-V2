@@ -10,5 +10,6 @@ export interface ExtractionTransaction {
   amount: number | null; transferNote: string | null; ocrRawResult: string | null; status: string;
   reviewReason: string | null; lastError: string | null; pngPath: string | null; attemptCount: number;
   lastAttemptAt: string | null; createdAt: string; updatedAt: string;
+  firstCopiedAt: string | null; lastCopiedAt: string | null;
 }
 export interface ExtractionProgressEvent { transactionId: number; status: string; message: string | null; }
