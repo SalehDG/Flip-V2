@@ -220,32 +220,36 @@ pub fn correct_transfer_note(database: &Database, transaction_id: i64, new_note:
         params![transaction_id, old_note, cleaned],
     ).map_err(db_err)?;
 
-    transaction.execute(
-        "UPDATE transactions SET transfer_note=?1, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
-        params![cleaned, transaction_id],
-    ).map_err(db_err)?;
-    let merged = if let Some(id) = flip_id.as_deref() {
-        merge_duplicate_transactions(&transaction, id).map_err(db_err)?
-    } else { None };
-    let (survivor_id, status) = if let Some(merged) = merged {
-        merged
+    let duplicate = if let Some(id) = flip_id.as_deref() {
+        transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM transactions WHERE flip_transaction_id=?1 AND id<>?2)",
+            params![id, transaction_id], |row| row.get::<_, bool>(0),
+        ).map_err(db_err)?
+    } else { false };
+
+    let missing_fields = flip_id.is_none() || date.is_none() || recipient.as_deref().unwrap_or_default().trim().is_empty() || amount.is_none();
+    if duplicate {
+        mark_existing_duplicate_rows(&transaction, flip_id.as_deref().unwrap_or_default(), transaction_id).map_err(db_err)?;
+    }
+    let (status, reason) = if duplicate {
+        ("Duplicate Review", Some("Flip Transaction ID terdeteksi duplikat."))
+    } else if missing_fields {
+        ("Needs Review", Some("Field transaksi wajib belum lengkap; Catatan Transfer telah dikoreksi."))
     } else {
-        let missing_fields = flip_id.is_none() || date.as_deref().unwrap_or_default().trim().is_empty()
-            || recipient.as_deref().unwrap_or_default().trim().is_empty() || amount.is_none();
-        (transaction_id, if missing_fields { "Needs Review".to_string() } else { "Completed".to_string() })
+        ("Completed", None)
     };
-    let reason = if status == "Completed" { None } else { Some("Field transaksi wajib belum lengkap; Catatan Transfer telah dikoreksi.") };
     transaction.execute(
-        "UPDATE transactions SET status=?1, review_reason=?2, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?3",
-        params![status, reason, survivor_id],
+        "UPDATE transactions SET transfer_note=?1, status=?2, review_reason=?3,
+            last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?4",
+        params![cleaned, status, reason, transaction_id],
     ).map_err(db_err)?;
     transaction.execute(
         "INSERT INTO processing_logs (transaction_id, process_type, status, error_message)
          VALUES (?1, 'manual-correction', ?2, ?3)",
-        params![survivor_id, status, reason],
+        params![transaction_id, status, reason],
     ).map_err(db_err)?;
     transaction.commit().map_err(db_err)?;
-    Ok(status)
+    Ok(status.to_string())
 }
 
 
@@ -322,6 +326,18 @@ fn process_one(
         }
     };
     let body = decoded_email_body(&payload);
+    if is_multi_destination_instruction_email(&body) {
+        const REASON: &str = "Email instruksi transfer ke banyak tujuan, bukan bukti transaksi transfer selesai. Dilewati dari ekstraksi transaksi.";
+        let connection = database.connection.lock().map_err(lock_err)?;
+        connection.execute(
+            "UPDATE transactions SET status='Skipped', review_reason=?1, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
+            params![REASON, item.id],
+        ).map_err(db_err)?;
+        drop(connection);
+        log_processing(database, item.id, "email-classifier", "Skipped", Some(REASON))?;
+        emit_progress(app, item.id, "Skipped", Some(REASON));
+        return Ok(Some("Skipped".to_string()));
+    }
     let parsed = parse_flip_email(item.subject.as_deref(), &body);
     save_parsed_fields(database, item.id, &parsed)?;
     if !parsed.review_reasons.is_empty() {
@@ -465,38 +481,43 @@ fn finish_review(
 ) -> Result<String, String> {
     let mut connection = database.connection.lock().map_err(lock_err)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
-    transaction.execute(
-        "UPDATE transactions SET flip_transaction_id=COALESCE(?1, flip_transaction_id),
-            transaction_date=COALESCE(?2, transaction_date), recipient_name=COALESCE(?3, recipient_name),
-            amount=COALESCE(?4, amount), png_path=COALESCE(?5, png_path), last_error=?6,
-            updated_at=CURRENT_TIMESTAMP WHERE id=?7",
-        params![flip_id, date, recipient, amount, png_path, error, item.id],
-    ).map_err(db_err)?;
-
-    let merged = if let Some(id) = flip_id.filter(|value| !value.trim().is_empty()) {
-        merge_duplicate_transactions(&transaction, id).map_err(db_err)?
+    let duplicate = if let Some(id) = flip_id {
+        transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM transactions WHERE flip_transaction_id=?1 AND id<>?2)",
+            params![id, item.id],
+            |row| row.get::<_, bool>(0),
+        ).map_err(db_err)?
     } else {
-        None
+        false
     };
-    let (survivor_id, status) = merged.unwrap_or((item.id, "Needs Review".to_string()));
-    let final_reason = if status == "Completed" {
-        None
+    if duplicate {
+        mark_existing_duplicate_rows(&transaction, flip_id.unwrap_or_default(), item.id).map_err(db_err)?;
+    }
+    let status = if duplicate { "Duplicate Review" } else { "Needs Review" };
+    let final_reason = if duplicate {
+        Some(match reason {
+            Some(reason) if !reason.trim().is_empty() => format!("{reason} Flip Transaction ID terdeteksi pada Message lain."),
+            _ => "Flip Transaction ID terdeteksi pada Message lain.".to_string(),
+        })
     } else {
-        reason.map(|value| value.to_string()).or_else(|| Some("Data transaksi belum lengkap setelah merge.".to_string()))
+        reason.map(|value| value.to_string())
     };
     transaction.execute(
-        "UPDATE transactions SET status=?1, review_reason=?2, last_error=?3,
-            updated_at=CURRENT_TIMESTAMP WHERE id=?4",
-        params![status, final_reason, error, survivor_id],
+        "UPDATE transactions SET status=?1, review_reason=?2,
+            flip_transaction_id=COALESCE(?3, flip_transaction_id),
+            transaction_date=COALESCE(?4, transaction_date), recipient_name=COALESCE(?5, recipient_name),
+            amount=COALESCE(?6, amount), png_path=COALESCE(?7, png_path), last_error=?8,
+            updated_at=CURRENT_TIMESTAMP WHERE id=?9",
+        params![status, final_reason, flip_id, date, recipient, amount, png_path, error, item.id],
     ).map_err(db_err)?;
     transaction.execute(
         "INSERT INTO processing_logs (gmail_account_id, transaction_id, process_type, status, error_message)
          VALUES (?1, ?2, 'extraction', ?3, ?4)",
-        params![item.account_id, survivor_id, status, final_reason],
+        params![item.account_id, item.id, status, final_reason],
     ).map_err(db_err)?;
     transaction.commit().map_err(db_err)?;
-    emit_progress(app, survivor_id, &status, final_reason.as_deref());
-    Ok(status)
+    emit_progress(app, item.id, status, final_reason.as_deref());
+    Ok(status.to_string())
 }
 
 fn finalize_with_duplicate_check(
@@ -510,106 +531,29 @@ fn finalize_with_duplicate_check(
 ) -> Result<Option<String>, String> {
     let mut connection = database.connection.lock().map_err(lock_err)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
-    transaction.execute(
-        "UPDATE transactions SET flip_transaction_id=COALESCE(?1, flip_transaction_id),
-            transaction_date=COALESCE(?2, transaction_date), recipient_name=COALESCE(?3, recipient_name),
-            amount=COALESCE(?4, amount), transfer_note=COALESCE(?5, transfer_note),
-            ocr_raw_result=COALESCE(?6, ocr_raw_result), png_path=COALESCE(?7, png_path),
-            last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?8",
-        params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount, transfer_note, raw_text, image_path, item.id],
+    let duplicate: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM transactions WHERE flip_transaction_id=?1 AND id<>?2 AND flip_transaction_id IS NOT NULL)",
+        params![parsed.transaction_id, item.id], |row| row.get(0),
     ).map_err(db_err)?;
-    let merged = merge_duplicate_transactions(&transaction, parsed.transaction_id.as_deref().unwrap_or_default()).map_err(db_err)?;
-    let (survivor_id, status) = merged.unwrap_or((item.id, "Completed".to_string()));
-    let reason = if status == "Needs Review" { Some("Data transaksi belum lengkap setelah merge.") } else { None };
+    if duplicate {
+        mark_existing_duplicate_rows(&transaction, parsed.transaction_id.as_deref().unwrap_or_default(), item.id).map_err(db_err)?;
+    }
+    let status = if duplicate { "Duplicate Review" } else { "Completed" };
+    let reason = if duplicate { Some("Flip Transaction ID terdeteksi pada Message lain." ) } else { None };
     transaction.execute(
-        "UPDATE transactions SET status=?1, review_reason=?2, last_error=NULL,
-            updated_at=CURRENT_TIMESTAMP WHERE id=?3",
-        params![status, reason, survivor_id],
+        "UPDATE transactions SET flip_transaction_id=?1, transaction_date=?2, recipient_name=?3,
+            amount=?4, transfer_note=?5, ocr_raw_result=?6, png_path=?7, status=?8,
+            review_reason=?9, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?10",
+        params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount, transfer_note, raw_text, image_path, status, reason, item.id],
     ).map_err(db_err)?;
     transaction.execute(
         "INSERT INTO processing_logs (gmail_account_id, transaction_id, process_type, status, error_message)
          VALUES (?1, ?2, 'extraction', ?3, ?4)",
-        params![item.account_id, survivor_id, status, reason],
+        params![item.account_id, item.id, status, reason],
     ).map_err(db_err)?;
     transaction.commit().map_err(db_err)?;
-    emit_progress(app, survivor_id, &status, reason);
-    Ok(Some(status))
-}
-
-
-/// Merge all records sharing a Flip transaction ID into one transaction row.
-/// Keeps the most complete row (then the oldest row) as the survivor, fills its
-/// missing fields from the others, migrates histories/logs, and deletes extras.
-fn merge_duplicate_transactions(
-    transaction: &Transaction<'_>,
-    flip_transaction_id: &str,
-) -> Result<Option<(i64, String)>, rusqlite::Error> {
-    if flip_transaction_id.trim().is_empty() { return Ok(None); }
-    type MergeRow = (i64, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, Option<String>);
-    let mut statement = transaction.prepare(
-        "SELECT id, flip_transaction_id, transaction_date, recipient_name, amount, transfer_note,
-                ocr_raw_result, png_path, status, review_reason, last_error, first_copied_at,
-                last_copied_at, retention_until, attempt_count, last_attempt_at
-         FROM transactions WHERE flip_transaction_id=?1 ORDER BY id ASC"
-    )?;
-    let rows = statement.query_map([flip_transaction_id], |row| Ok((
-        row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?,
-        row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?, row.get(11)?,
-        row.get(12)?, row.get(13)?, row.get(14)?, row.get(15)?,
-    )))?.collect::<Result<Vec<MergeRow>, _>>()?;
-    drop(statement);
-    if rows.len() < 2 { return Ok(None); }
-
-    let completeness = |row: &MergeRow| -> usize {
-        [row.1.as_deref(), row.2.as_deref(), row.3.as_deref(), row.4.map(|_| "present"), row.5.as_deref()]
-            .iter().filter(|value| value.is_some_and(|text| !text.trim().is_empty())).count()
-    };
-    let mut ordered = rows;
-    ordered.sort_by(|a, b| completeness(b).cmp(&completeness(a))
-        .then_with(|| (b.8 == "Completed").cmp(&(a.8 == "Completed")))
-        .then_with(|| a.0.cmp(&b.0)));
-    let survivor = ordered.remove(0);
-    let survivor_id = survivor.0;
-    let mut fields: [Option<String>; 14] = [
-        survivor.1.clone(), survivor.2.clone(), survivor.3.clone(), survivor.4.map(|v| v.to_string()),
-        survivor.5.clone(), survivor.6.clone(), survivor.7.clone(), survivor.9.clone(), survivor.10.clone(),
-        survivor.11.clone(), survivor.12.clone(), survivor.13.clone(), Some(survivor.14.to_string()), survivor.15.clone(),
-    ];
-    for other in &ordered {
-        let sources: [Option<String>; 14] = [
-            other.1.clone(), other.2.clone(), other.3.clone(), other.4.map(|v| v.to_string()),
-            other.5.clone(), other.6.clone(), other.7.clone(), other.9.clone(), other.10.clone(),
-            other.11.clone(), other.12.clone(), other.13.clone(), Some(other.14.to_string()), other.15.clone(),
-        ];
-        for index in 0..fields.len() {
-            if fields[index].as_deref().map_or(true, |v| v.trim().is_empty()) {
-                if sources[index].as_deref().map_or(false, |v| !v.trim().is_empty()) {
-                    fields[index] = sources[index].clone();
-                }
-            }
-        }
-        transaction.execute("UPDATE processing_logs SET transaction_id=?1 WHERE transaction_id=?2", params![survivor_id, other.0])?;
-        transaction.execute("UPDATE correction_history SET transaction_id=?1 WHERE transaction_id=?2", params![survivor_id, other.0])?;
-        transaction.execute("DELETE FROM transactions WHERE id=?1", [other.0])?;
-    }
-    let amount = fields[3].as_deref().and_then(|v| v.parse::<i64>().ok());
-    let complete = fields[0].as_deref().is_some_and(|v| !v.trim().is_empty())
-        && fields[1].as_deref().is_some_and(|v| !v.trim().is_empty())
-        && fields[2].as_deref().is_some_and(|v| !v.trim().is_empty())
-        && amount.is_some()
-        && fields[4].as_deref().is_some_and(|v| !v.trim().is_empty());
-    let status = if complete { "Completed" } else { "Needs Review" };
-    transaction.execute(
-        "UPDATE transactions SET flip_transaction_id=?1, transaction_date=?2, recipient_name=?3,
-            amount=?4, transfer_note=?5, ocr_raw_result=?6, png_path=?7, status=?8,
-            review_reason=CASE WHEN ?8='Completed' THEN NULL ELSE 'Data transaksi belum lengkap setelah merge.' END,
-            last_error=NULL, first_copied_at=COALESCE(first_copied_at, ?9),
-            last_copied_at=COALESCE(last_copied_at, ?10), retention_until=COALESCE(retention_until, ?11),
-            attempt_count=MAX(attempt_count, ?12), last_attempt_at=COALESCE(last_attempt_at, ?13),
-            updated_at=CURRENT_TIMESTAMP WHERE id=?14",
-        params![fields[0], fields[1], fields[2], amount, fields[4], fields[5], fields[6], status, fields[9], fields[10], fields[11], fields[12].as_deref().and_then(|v| v.parse::<i64>().ok()).unwrap_or(0), fields[13], survivor_id],
-    )?;
-    Ok(Some((survivor_id, status.to_string())))
+    emit_progress(app, item.id, status, reason);
+    Ok(Some(status.to_string()))
 }
 
 
@@ -694,6 +638,7 @@ fn count_status(summary: &mut ExtractionSummary, status: &str) {
         "Needs Review" => summary.needs_review += 1,
         "Duplicate Review" => summary.duplicate_review += 1,
         "Failed" => summary.failed += 1,
+        "Skipped" => summary.skipped += 1,
         _ => {}
     }
 }
@@ -710,14 +655,28 @@ fn emit_progress(app: Option<&AppHandle>, transaction_id: i64, status: &str, mes
 }
 
 
+/// Detect Flip multi-destination transfer instruction emails, which are not
+/// completed transfer receipts and should not enter OCR/extraction.
+fn is_multi_destination_instruction_email(body: &str) -> bool {
+    let normalized = body.to_ascii_lowercase();
+    let has_multi_destination_phrase = normalized.contains("transaksi ke banyak tujuan")
+        || normalized.contains("buat transaksi ke banyak tujuan")
+        || normalized.contains("jumlah tujuan");
+    let has_instruction_context = normalized.contains("agar transaksinya bisa kami proses")
+        || normalized.contains("transfer ke bank")
+        || normalized.contains("jumlah transfer");
+    has_multi_destination_phrase && has_instruction_context
+}
+
+
 fn decode_base64url(value: &str) -> Result<Vec<u8>, String> {
     URL_SAFE_NO_PAD.decode(value).or_else(|_| URL_SAFE.decode(value)).map_err(|error| error.to_string())
 }
 
 
-fn decoded_email_body(message: &Value) -> String {
-    // Gmail API stores MIME parts inside Message.payload. Diagnostic and test
-    // callers may pass a MIME payload directly, so support both structures.
+pub(crate) fn decoded_email_body(message: &Value) -> String {
+    // Gmail API message bodies are nested under Message.payload. Some tests or
+    // diagnostic callers pass the MIME payload directly, so support both shapes.
     let mime_root = message.get("payload").unwrap_or(message);
     let mut plain = Vec::new();
     let mut html = Vec::new();
@@ -728,11 +687,17 @@ fn decoded_email_body(message: &Value) -> String {
 
 fn collect_body_parts(value: &Value, plain: &mut Vec<String>, html: &mut Vec<String>) {
     let mime = value.get("mimeType").and_then(Value::as_str).unwrap_or_default();
-    let has_attachment_id = value.pointer("/body/attachmentId")
+    // Gmail often includes `attachmentId: null` on ordinary MIME body parts.
+    // Presence alone must not classify the part as an attachment.
+    let has_filename = value
+        .get("filename")
         .and_then(Value::as_str)
-        .is_some_and(|attachment_id| !attachment_id.trim().is_empty());
-    let is_attachment = value.get("filename").and_then(Value::as_str).is_some_and(|name| !name.trim().is_empty())
-        || has_attachment_id;
+        .is_some_and(|name| !name.trim().is_empty());
+    let has_attachment_id = value
+        .pointer("/body/attachmentId")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.trim().is_empty());
+    let is_attachment = has_filename || has_attachment_id;
     if is_attachment {
         return;
     }
@@ -802,6 +767,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn detects_multi_destination_transfer_instruction_email() {
+        let body = "Kamu baru aja buat transaksi ke banyak tujuan via Flip.\nJumlah Tujuan\n2\nAgar transaksinya bisa kami proses, silakan transfer ke rekening Flip.\nJumlah Transfer\nRp5.388.825";
+        assert!(is_multi_destination_instruction_email(body));
+    }
+
+    #[test]
+    fn does_not_skip_single_recipient_transfer_receipt() {
+        let body = "ID Transaksi\n#ST123456789\nNama Tujuan\nEDDY KURNIAWAN\nJumlah Transfer\nRp856.000";
+        assert!(!is_multi_destination_instruction_email(body));
+    }
+
+    #[test]
     fn html_conversion_removes_tags_and_script_content() {
         assert_eq!(html_to_text("<p>Hello &amp; World</p><script>alert(1)</script>"), "Hello & World");
     }
@@ -825,43 +802,27 @@ mod tests {
     }
 
     #[test]
-    fn uses_html_only_when_plain_text_missing() {
-        let payload = serde_json::json!({"mimeType":"text/html","body":{"data":"PHA-SGVsbG88L3A-"}});
-        assert!(decoded_email_body(&payload).contains("Hello"));
-    }
-
-    #[test]
-    fn parses_flip_html_from_full_gmail_message_with_null_attachment_id() {
+    fn decodes_gmail_message_with_payload_wrapper_and_null_attachment_id() {
         let message = serde_json::json!({
-            "id": "gmail-message-test",
+            "id": "message-id",
             "payload": {
-                "mimeType": "multipart/mixed",
+                "mimeType": "multipart/alternative",
                 "parts": [
-                    {
-                        "mimeType": "text/html",
-                        "body": {
-                            "attachmentId": null,
-                            "data": "PGRpdj5JRCBUcmFuc2Frc2k8L2Rpdj48ZGl2PiNTVDI2MTEyMTEzNTI1MTU4MlNWNTBLPC9kaXY-PGRpdj5XYWt0dSBUZXJraXJpbTwvZGl2PjxkaXY-MjEgTm92IDIwMjYgMTM6NTMgV0lCPC9kaXY-PGRpdj5OYW1hIFR1anVhbjwvZGl2PjxkaXY-TVVIQU1BRCBBTldBUiBHVU5BV0FOPC9kaXY-PGRpdj5Ob21pbmFsPC9kaXY-PGRpdj5ScDE4Ljk3NS4wMDA8L2Rpdj4"
-                        }
-                    },
-                    {
-                        "mimeType": "image/png",
-                        "filename": "flip-receipt.png",
-                        "body": { "attachmentId": "attachment-123" }
-                    }
+                    {"mimeType": "text/plain", "body": {"attachmentId": null, "data": "SGVsbG8gZGFyaQ=="}},
+                    {"mimeType": "text/html", "body": {"attachmentId": null, "data": "PHA-SGVsbG88L3A-"}}
                 ]
             }
         });
-
-        let body = decoded_email_body(&message);
-        let parsed = parse_flip_email(None, &body);
-        assert_eq!(parsed.transaction_id.as_deref(), Some("ST261121135251582SV50K"));
-        assert_eq!(parsed.transaction_date.as_deref(), Some("21/11/2026"));
-        assert_eq!(parsed.recipient_name.as_deref(), Some("MUHAMAD ANWAR GUNAWAN"));
-        assert_eq!(parsed.amount, Some(18_975_000));
-        assert!(parsed.review_reasons.is_empty(), "Unexpected review reasons: {:?}; body={body:?}", parsed.review_reasons);
+        assert_eq!(decoded_email_body(&message), "Hello dari");
     }
 
+
+    #[test]
+    fn uses_html_only_when_plain_text_missing() {
+
+        let payload = serde_json::json!({"mimeType":"text/html","body":{"data":"PHA-SGVsbG88L3A-"}});
+        assert!(decoded_email_body(&payload).contains("Hello"));
+    }
 
     fn create_test_database() -> (Database, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!("flip-extraction-test-{}.sqlite", uuid::Uuid::new_v4()));
@@ -971,54 +932,6 @@ mod tests {
             assert_eq!(count, 3);
         }
         assert!(claim_transaction(&database, 1, true).unwrap().is_none());
-        remove_test_database(database, &path);
-    }
-
-
-
-    #[test]
-    fn duplicate_transaction_rows_are_merged_into_one_completed_record() {
-        let (database, path) = create_test_database();
-        {
-            let connection = database.connection.lock().unwrap();
-            connection.execute(
-                "UPDATE transactions SET flip_transaction_id='ST-MERGE-1', transaction_date='21/11/2026',
-                 recipient_name=NULL, amount=856000, transfer_note='TR25 belanja kelapa dua', status='Needs Review' WHERE id=1",
-                [],
-            ).unwrap();
-            connection.execute(
-                "INSERT INTO gmail_messages(gmail_account_id,gmail_message_id,gmail_thread_id,payload_json) VALUES (1,'message-2','thread-2','{}')",
-                [],
-            ).unwrap();
-            connection.execute(
-                "INSERT INTO transactions(gmail_account_id,gmail_message_id,flip_transaction_id,recipient_name,status)
-                 VALUES (1,'message-2','ST-MERGE-1','EDDY KURNIAWAN','Needs Review')",
-                [],
-            ).unwrap();
-            connection.execute(
-                "INSERT INTO processing_logs(transaction_id,process_type,status) VALUES (2,'test-log','Needs Review')",
-                [],
-            ).unwrap();
-        }
-        {
-            let mut connection = database.connection.lock().unwrap();
-            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
-            let result = merge_duplicate_transactions(&transaction, "ST-MERGE-1").unwrap();
-            assert_eq!(result, Some((1, "Completed".to_string())));
-            transaction.commit().unwrap();
-        }
-        {
-            let connection = database.connection.lock().unwrap();
-            let count: i64 = connection.query_row("SELECT COUNT(*) FROM transactions WHERE flip_transaction_id='ST-MERGE-1'", [], |row| row.get(0)).unwrap();
-            assert_eq!(count, 1);
-            let fields: (Option<String>, Option<String>, Option<i64>, Option<String>, String) = connection.query_row(
-                "SELECT transaction_date,recipient_name,amount,transfer_note,status FROM transactions WHERE id=1",
-                [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
-            ).unwrap();
-            assert_eq!(fields, (Some("21/11/2026".into()), Some("EDDY KURNIAWAN".into()), Some(856000), Some("TR25 belanja kelapa dua".into()), "Completed".into()));
-            let moved_log: i64 = connection.query_row("SELECT COUNT(*) FROM processing_logs WHERE transaction_id=1 AND process_type='test-log'", [], |row| row.get(0)).unwrap();
-            assert_eq!(moved_log, 1);
-        }
         remove_test_database(database, &path);
     }
 

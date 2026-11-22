@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { transactionService } from '../services/transactionService';
 import type { ExtractionProgressEvent, ExtractionTransaction } from '../../../services/tauri/types';
 
-const filters = ['Semua', 'Completed', 'Needs Review', 'Duplicate Review', 'Failed', 'Detected', 'Parsed', 'OCR Processing'];
+const filters = ['Semua', 'Completed', 'Needs Review', 'Duplicate Review', 'Failed', 'Skipped', 'Detected', 'Parsed', 'OCR Processing'];
 function formatAmount(value: number | null) {
   return value == null ? '—' : new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(value);
 }
@@ -12,6 +12,21 @@ function dateLabel(value: string | null) {
   if (!value) return '—';
   const date = new Date(`${value}T00:00:00`);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('id-ID');
+}
+
+function formatEmailBody(body: string) {
+  // Decode HTML entities without injecting markup into the React tree.
+  const decoder = document.createElement('textarea');
+  decoder.innerHTML = body;
+  const decoded = decoder.value.replace(/\u200b/g, '').replace(/\u00a0/g, ' ');
+  return decoded
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(line => line.replace(/[\t ]+/g, ' ').trim())
+    .filter((line, index, lines) => line !== '' || (index > 0 && lines[index - 1] !== ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 export default function Transactions() {
@@ -26,6 +41,9 @@ export default function Transactions() {
   const [reviewDraft, setReviewDraft] = useState({ date: '', recipient: '', transactionId: '', amount: '', note: '' });
   const [messageOpen, setMessageOpen] = useState(true);
   const [invoiceOpen, setInvoiceOpen] = useState(true);
+  const [messageBody, setMessageBody] = useState('');
+  const [messageLoading, setMessageLoading] = useState(false);
+  const [messageError, setMessageError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
@@ -39,6 +57,21 @@ export default function Transactions() {
     void listen<ExtractionProgressEvent>('flip://extraction-progress', () => { void load(); }).then(fn => { unlisten = fn; });
     return () => unlisten?.();
   }, [load]);
+  useEffect(() => {
+    if (!reviewRow || !messageOpen) return;
+    let cancelled = false;
+    setMessageBody('');
+    setMessageError('');
+    setMessageLoading(true);
+    invoke<string>('get_gmail_message_body', {
+      accountId: reviewRow.gmailAccountId,
+      messageId: reviewRow.gmailMessageId,
+    })
+      .then(body => { if (!cancelled) setMessageBody(body); })
+      .catch(error => { if (!cancelled) setMessageError(String(error)); })
+      .finally(() => { if (!cancelled) setMessageLoading(false); });
+    return () => { cancelled = true; };
+  }, [reviewRow, messageOpen]);
 
   async function retry(id: number) {
     setSavingId(id); setError('');
@@ -114,6 +147,10 @@ export default function Transactions() {
           .message-meta{display:grid;gap:8px;font-size:12px;color:#64778e}
           .message-meta strong{color:#354a63;overflow-wrap:anywhere}
           .message-unavailable{font-size:12px;line-height:1.55;color:#7c8da2;background:#f5f8fc;border:1px dashed #d6e2ef;border-radius:10px;padding:12px;margin-top:12px}
+          .message-body{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6;color:#344b65;background:#f8fbff;border:1px solid #e1eaf4;border-radius:10px;padding:12px;margin-top:12px;max-height:360px;overflow:auto}
+          .message-loading,.message-error{font-size:12px;line-height:1.55;padding:12px;margin-top:12px;border-radius:10px}
+          .message-loading{color:#718198;background:#f5f8fc;border:1px dashed #d6e2ef}
+          .message-error{color:#9a4e43;background:#fff1ef;border:1px solid #f2d4ce;overflow-wrap:anywhere}
           .message-reason{font-size:12px;color:#a36c18;background:#fff8e9;border-radius:8px;padding:9px 10px;margin-top:10px}
           .source-panel .invoice-canvas{min-height:220px}
           .review-form{background:white;border:1px solid #e0e9f3;border-radius:15px;padding:18px;overflow:auto;display:flex;flex-direction:column;gap:13px}
@@ -155,7 +192,10 @@ export default function Transactions() {
                       <div>Akun Gmail<strong>{reviewRow.accountEmail || '—'}</strong></div>
                       <div>Gmail Message ID<strong>{reviewRow.gmailMessageId || '—'}</strong></div>
                     </div>
-                    <div className="message-unavailable">Isi pesan email asli belum tersedia pada data transaksi frontend saat ini. Panel ini sudah disiapkan; untuk menampilkan body email, backend perlu menyediakan konten pesan Gmail.</div>
+                    {messageLoading && <div className="message-loading">Memuat isi pesan email…</div>}
+                    {!messageLoading && messageError && <div className="message-error">Gagal mengambil pesan: {messageError}</div>}
+                    {!messageLoading && !messageError && messageBody && <div className="message-body">{formatEmailBody(messageBody)}</div>}
+                    {!messageLoading && !messageError && !messageBody && <div className="message-unavailable">Body email kosong atau tidak tersedia.</div>}
                     {reviewRow.reviewReason && <div className="message-reason"><strong>Alasan review:</strong> {reviewRow.reviewReason}</div>}
                     {reviewRow.lastError && <div className="message-reason"><strong>Error terakhir:</strong> {reviewRow.lastError}</div>}
                   </div>}
