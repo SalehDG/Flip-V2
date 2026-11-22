@@ -71,11 +71,11 @@ function App() {
 
 
       <main className="main-content">
-        <header className="topbar">
+        {page !== 'dashboard' && <header className="topbar">
           <span className="breadcrumb">Flip V2 <span>/</span> {activePageLabel}</span>
           <span className="local-badge"><span className="connection-dot" /> Database lokal</span>
-        </header>
-        <div className="page-content">
+        </header>}
+        <div className={`page-content ${page === 'dashboard' ? 'dashboard-content' : ''}`}>
           {page === 'dashboard' ? <Dashboard onOpenTransactions={() => setPage('transactions')} />
             : page === 'transactions' ? <Transactions />
               : page === 'copy-tracking' ? <CopyTracking />
