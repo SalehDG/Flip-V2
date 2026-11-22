@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import "./GmailAccountTest.css";
 
 interface GmailAccount {
   id: number;
@@ -189,59 +190,92 @@ export default function GmailAccountTest() {
   }
 
   return (
-    <section aria-labelledby="gmail-accounts-title">
-      <h2 id="gmail-accounts-title">Akun Gmail</h2>
-      <p>Hubungkan akun Gmail untuk mengambil email transaksi Flip.</p>
-      <div className="gmail-actions">
-        <button onClick={connectGmail} disabled={connecting || syncingAccountIds.size > 0}>{connecting ? "Menghubungkan..." : "Hubungkan akun Gmail"}</button>
-        {connecting && <button onClick={() => void cancelConnectGmail()}>Batalkan koneksi</button>}
-        <button onClick={() => void loadAccounts()} disabled={loading || connecting}>{loading ? "Memuat..." : "Refresh daftar"}</button>
+    <section className="gmail-page" aria-labelledby="gmail-accounts-title">
+      <div className="gmail-page-header">
+        <div className="gmail-heading-mark" aria-hidden="true">✉</div>
+        <div className="gmail-heading-copy">
+          <h2 id="gmail-accounts-title">Akun Gmail</h2>
+          <p>Kelola akun Gmail untuk mengambil email transaksi Flip.</p>
+        </div>
+        <div className="gmail-header-actions">
+          <button className="gmail-btn gmail-btn-secondary" onClick={() => void loadAccounts()} disabled={loading || connecting}>
+            <span className={loading ? "gmail-spin" : ""}>↻</span> {loading ? "Memuat..." : "Refresh"}
+          </button>
+          <button className="gmail-btn gmail-btn-primary" onClick={connectGmail} disabled={connecting || syncingAccountIds.size > 0}>
+            ＋ {connecting ? "Menghubungkan..." : "Hubungkan Akun Gmail"}
+          </button>
+          {connecting && <button className="gmail-btn gmail-btn-quiet" onClick={() => void cancelConnectGmail()}>Batalkan</button>}
+        </div>
       </div>
-      {message && <p role="status">{message}</p>}
-      {error && <p role="alert" className="gmail-error">{error}</p>}
-      {loading && accounts.length === 0 ? <p>Memuat akun Gmail...</p> : accounts.length === 0 ? <p>Belum ada akun Gmail yang terhubung.</p> : (
-        <ul className="gmail-account-list">
+
+
+      <div className="gmail-privacy-note">
+        <span className="gmail-info-icon">i</span>
+        <div><strong>Akses hanya untuk membaca email.</strong><span>Flip V2 tidak dapat mengirim, mengubah, atau menghapus email Anda.</span></div>
+      </div>
+
+      {message && <div className="gmail-feedback gmail-feedback-success" role="status">{message}</div>}
+      {error && <div className="gmail-feedback gmail-feedback-error" role="alert">{error}</div>}
+
+
+      {loading && accounts.length === 0 ? <div className="gmail-empty-state">Memuat akun Gmail...</div> : accounts.length === 0 ? (
+        <div className="gmail-empty-state">
+          <div className="gmail-empty-icon">✉</div>
+          <strong>Belum ada akun Gmail terhubung</strong>
+          <span>Hubungkan akun untuk mulai mengambil email transaksi Flip.</span>
+          <button className="gmail-btn gmail-btn-primary" onClick={connectGmail} disabled={connecting}>＋ Hubungkan akun Gmail</button>
+        </div>
+      ) : (
+        <div className="gmail-account-list">
           {accounts.map((account) => {
             const current = progress[account.id];
             const savedState = syncStates[account.id];
             const isSyncing = syncingAccountIds.has(account.id);
-            return <li key={account.id}>
-              <div>
-                <strong>{account.emailAddress}</strong>
-                <span className="gmail-account-status">{account.accountStatus}</span>
-                <div className="gmail-sync-controls">
-                  <label htmlFor={`sync-date-${account.id}`}>Tanggal awal sinkronisasi</label>
-                  <input id={`sync-date-${account.id}`} type="date" value={startDates[account.id] ?? ""} disabled={isSyncing} onChange={(e) => setStartDates((old) => ({ ...old, [account.id]: e.target.value }))} />
-                  <button onClick={() => void startSync(account)} disabled={isSyncing || account.accountStatus !== "connected"}>{isSyncing ? "Sinkronisasi..." : "Mulai / Lanjutkan Initial Sync"}</button>
-                  {account.historyId && (
-                    <button
-                      onClick={() => void startIncrementalSync(account)}
-                      disabled={isSyncing || account.accountStatus !== "connected"}
-                    >
-                      {isSyncing ? "Sinkronisasi..." : "Sinkronkan Email Baru"}
-                    </button>
-                  )}
-                  {(current || savedState) && (
-                    <small>
-                      Status: {current?.status ?? savedState?.status} ·
-                      Message: {current?.processedMessages ?? savedState?.processedMessages ?? 0}
-                      {current?.attachmentCount !== undefined
-                        ? ` · Attachment: ${current.attachmentCount}`
-                        : ""}
-                    </small>
-                  )}
-                  {savedState?.lastError && (
-                    <small className="gmail-error">Error terakhir: {savedState.lastError}</small>
-                  )}
-                  {account.lastSyncAt && <small>Sinkronisasi terakhir: {formatLocalSyncTime(account.lastSyncAt)}</small>}
+            const displayStatus = isSyncing ? (current?.status ?? "processing") : (savedState?.status ?? account.accountStatus);
+            const isConnected = account.accountStatus === "connected";
+            const initials = account.emailAddress.split("@")[0].slice(0, 2).toUpperCase();
+            return (
+              <article className="gmail-account-card" key={account.id}>
+                <div className="gmail-account-top">
+                  <div className="gmail-avatar" aria-label={`Avatar ${account.emailAddress}`}><span>{initials}</span><i>G</i></div>
+                  <div className="gmail-account-identity">
+                    <strong>{account.emailAddress}</strong>
+                    <div className="gmail-account-badges">
+                      <span className={`gmail-badge ${isConnected ? "is-connected" : "is-disconnected"}`}><i />{isConnected ? "Terhubung" : "Terputus"}</span>
+                    </div>
+                  </div>
+                  <div className="gmail-account-meta">
+                    <div className="gmail-meta-item"><span className="gmail-meta-icon">◷</span><div><small>Sinkronisasi terakhir</small><strong>{account.lastSyncAt ? formatLocalSyncTime(account.lastSyncAt) : "Belum pernah"}</strong></div></div>
+                    <div className="gmail-meta-item"><span className="gmail-meta-icon">✉</span><div><small>Email diproses</small><strong>{savedState?.processedMessages ?? current?.processedMessages ?? 0}</strong></div></div>
+                  </div>
                 </div>
-              </div>
-              {account.accountStatus === "connected" && <button className="gmail-disconnect" onClick={() => void disconnectGmail(account)} disabled={connecting || isSyncing}>Putuskan</button>}
-            </li>;
+
+                <div className="gmail-sync-area">
+                  <div className="gmail-sync-title"><span className="gmail-sync-symbol">↻</span><strong>Sinkronisasi</strong></div>
+                  <div className="gmail-sync-row">
+                    <label className="gmail-date-field"><span>Mulai dari tanggal</span><input id={`sync-date-${account.id}`} type="date" value={startDates[account.id] ?? ""} disabled={isSyncing} onChange={(e) => setStartDates((old) => ({ ...old, [account.id]: e.target.value }))} /></label>
+                    <button className="gmail-btn gmail-btn-primary gmail-sync-initial" onClick={() => void startSync(account)} disabled={isSyncing || !isConnected}>
+                      <span>{isSyncing ? "◌" : "▶"}</span>{isSyncing ? "Sinkronisasi berjalan..." : "Mulai Sync Awal"}
+                    </button>
+                    {account.historyId && <button className="gmail-btn gmail-btn-secondary gmail-sync-incremental" onClick={() => void startIncrementalSync(account)} disabled={isSyncing || !isConnected}><span>↻</span> Sync Email Baru</button>}
+                  </div>
+                  <p className="gmail-sync-helper">Sync awal mengambil email sejak tanggal yang dipilih. Sync berikutnya hanya mengambil email baru.</p>
+                </div>
+
+                <div className={`gmail-sync-status ${isSyncing ? "status-running" : savedState?.lastError ? "status-error" : "status-idle"}`}>
+                  <span className="gmail-status-dot" />
+                  <div className="gmail-status-copy"><strong>{isSyncing ? "Sinkronisasi berlangsung" : savedState?.lastError ? "Sinkronisasi bermasalah" : "Sinkronisasi siap"}</strong><span>{isSyncing ? `${displayStatus} · ${current?.processedMessages ?? 0} email diproses${current?.attachmentCount !== undefined ? ` · ${current.attachmentCount} lampiran` : ""}` : savedState?.lastError ? savedState.lastError : "Tidak ada proses sinkronisasi yang berjalan."}</span></div>
+                  {isConnected && <button className="gmail-disconnect-link" onClick={() => void disconnectGmail(account)} disabled={connecting || isSyncing}>Putuskan akun</button>}
+                </div>
+              </article>
+            );
           })}
-        </ul>
+        </div>
       )}
-      <small>Flip V2 hanya meminta izin membaca email (gmail.readonly). Initial Sync mengambil email mulai tanggal yang dipilih. Sinkronkan Email Baru menggunakan Gmail History API. Polling otomatis dan system tray termasuk fase Background & Retention.</small>
+      <button className="gmail-add-account-card" onClick={connectGmail} disabled={connecting || syncingAccountIds.size > 0}>
+        <span className="gmail-add-icon">＋</span><span><strong>Tambah akun Gmail lain</strong><small>Hubungkan akun tambahan untuk mengambil transaksi dari beberapa akun Flip.</small></span><span className="gmail-add-chevron">›</span>
+      </button>
+      <p className="gmail-footer-note">Flip V2 menggunakan izin <code>gmail.readonly</code>. Sinkronisasi email baru memanfaatkan Gmail History API.</p>
     </section>
   );
 }
