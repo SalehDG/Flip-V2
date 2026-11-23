@@ -126,3 +126,137 @@
 .transactions-workspace .tx-latest-tab{color:#236bc1!important}
 .transactions-workspace .tx-latest-tab .latest-icon{color:#2879d8}
 .transactions-workspace .tx-status-tabs .new-count{background:#e6f2ff;color:#1d70cc}
+
+/* Flip V2 Transactions — vivid, soft-blue polish matching the reference */
+.transactions-workspace{
+  --tx-blue:#1674e8;
+  --tx-blue-deep:#075ac8;
+  --tx-blue-soft:#e8f3ff;
+  --tx-border:#dce9f8;
+  --tx-text:#173251;
+  --tx-muted:#6f88a8;
+  position:relative;
+  isolation:isolate;
+}
+.transactions-workspace .tx-page-header{
+  position:relative;
+  z-index:0;
+  min-height:72px;
+  overflow:visible;
+  margin-bottom:18px;
+}
+/* Decorative wave backdrop: sits behind the entire workspace, never over controls */
+.transactions-workspace::before{
+  content:"";
+  position:absolute;
+  z-index:-1;
+  pointer-events:none;
+  top:-24px;
+  right:-32px;
+  left:18%;
+  height:520px;
+  opacity:.52;
+  background-repeat:no-repeat;
+  background-position:right top;
+  background-size:100% 100%;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1400 520' preserveAspectRatio='none'%3E%3Cpath fill='%23e7f3ff' d='M0 34C210 130 420 90 620 40S1060-8 1400 82V520H0Z'/%3E%3Cpath fill='%23d5eaff' opacity='.78' d='M110 105C340 180 570 150 770 75S1180 24 1400 112V520H110Z'/%3E%3Cpath fill='%23c3e0ff' opacity='.42' d='M500 112C700 185 920 155 1080 90S1300 60 1400 138V520H500Z'/%3E%3Cpath fill='%23f5faff' opacity='.82' d='M0 230C250 130 460 218 690 195S1160 180 1400 285V520H0Z'/%3E%3C/svg%3E");
+}
+.transactions-workspace .tx-page-header::before{content:none!important;}
+.transactions-workspace .tx-page-header h2{color:#15385f;font-size:27px;font-weight:760;letter-spacing:-.7px}
+.transactions-workspace .tx-page-header p{color:#6483a9;font-size:13px}
+.transactions-workspace .tx-refresh{border-color:#cfe2fa;background:linear-gradient(180deg,#fff 0%,#edf6ff 100%);color:#2268b7;box-shadow:0 3px 10px #2d79cf12}
+.transactions-workspace .tx-refresh:hover:not(:disabled){background:linear-gradient(180deg,#f6fbff 0%,#dceeff 100%);border-color:#a9d0f7;color:#135db9}
+.transactions-workspace .tx-status-tabs{background:linear-gradient(180deg,#fff 0%,#f7fbff 100%);border-color:#d9e9fb;border-radius:15px;padding:6px;gap:6px;box-shadow:0 4px 15px #2a72c80a}
+.transactions-workspace .tx-status-tabs button{border-radius:10px;padding:10px 12px;transition:background .18s,border-color .18s,color .18s,box-shadow .18s}
+.transactions-workspace .tx-status-tabs button:hover{background:#f0f7ff;border-color:#dcecff;color:#2b65a7}
+.transactions-workspace .tx-status-tabs button.active.tx-latest-tab{background:linear-gradient(135deg,#2c8df6 0%,#1470df 52%,#075cc9 100%);border-color:#1d7be8;color:#fff;box-shadow:0 4px 12px #1877e62b}
+.transactions-workspace .tx-status-tabs button.active.tx-latest-tab .latest-icon,
+.transactions-workspace .tx-status-tabs button.active.tx-latest-tab .tx-tab-count{color:#fff}
+.transactions-workspace .tx-status-tabs button.active.tx-latest-tab .tx-tab-count{background:#ffffff28;opacity:1}
+.transactions-workspace .tx-status-tabs button.active:not(.tx-latest-tab){background:#eaf4ff;border-color:#cde3fc;color:#1767c3;box-shadow:inset 0 0 0 1px #ffffff70}
+.transactions-workspace .tx-status-tabs button:nth-child(2) .tx-tab-icon{color:#7186a2}
+.transactions-workspace .tx-status-tabs button:nth-child(3){color:#198252}
+.transactions-workspace .tx-status-tabs button:nth-child(3) .tx-tab-icon{color:#16a36b}
+.transactions-workspace .tx-status-tabs button:nth-child(4){color:#b87916}
+.transactions-workspace .tx-status-tabs button:nth-child(4) .tx-tab-icon{color:#ee971e}
+.transactions-workspace .tx-status-tabs button:nth-child(5){color:#6653c6}
+.transactions-workspace .tx-status-tabs button:nth-child(5) .tx-tab-icon{color:#8168df}
+.transactions-workspace .tx-status-tabs button:nth-child(6){color:#cf4449}
+.transactions-workspace .tx-status-tabs button:nth-child(6) .tx-tab-icon{color:#e34c55}
+.transactions-workspace .tx-tab-count{border-radius:999px;padding:2px 6px;background:#f1f6fc;opacity:1;color:#607b9b}
+.transactions-workspace .tx-toolbar{gap:10px}
+.transactions-workspace .tx-date-select,
+.transactions-workspace .tx-account-trigger,
+.transactions-workspace .tx-search{border-color:#d3e4f7;background-color:#fff;border-radius:11px;box-shadow:0 2px 6px #2b75c808;transition:border-color .15s,box-shadow .15s,background .15s}
+.transactions-workspace .tx-date-select:hover,
+.transactions-workspace .tx-account-trigger:hover,
+.transactions-workspace .tx-search:hover{border-color:#a9cff5;background-color:#fbfdff}
+.transactions-workspace .tx-date-select:focus,
+.transactions-workspace .tx-account-trigger:focus-visible,
+.transactions-workspace .tx-search:focus-within{border-color:#75b3f0;box-shadow:0 0 0 3px #2786ef18}
+.transactions-workspace .tx-account-avatar{background:linear-gradient(145deg,#d6eaff 0%,#8dc1f7 100%);color:#125fb6;box-shadow:inset 0 1px 0 #ffffff90}
+.transactions-workspace .tx-account-avatar.all-avatar{background:linear-gradient(145deg,#eff6ff,#dceafb);color:#557da8}
+.transactions-workspace .tx-copy-all,
+.transactions-workspace .tx-copy-all:hover:not(:disabled){background:linear-gradient(135deg,#2f91f7 0%,#1675e5 48%,#075bc8 100%);border-color:#1675e5;color:#fff;box-shadow:0 5px 14px #1473df30}
+.transactions-workspace .tx-copy-all:hover:not(:disabled){filter:saturate(1.08) brightness(1.03);transform:translateY(-1px)}
+.transactions-workspace .tx-copy-all small{background:#ffffff2c;border:1px solid #ffffff25;color:#fff}
+.transactions-workspace .tx-main-panel,
+.transactions-workspace .tx-detail-panel{border-color:#dbe9f8;border-radius:15px;box-shadow:0 4px 16px #2b6fbf0a}
+.transactions-workspace .tx-table th{background:linear-gradient(180deg,#f5faff 0%,#eaf3ff 100%);color:#6683a7;border-color:#dceafa}
+.transactions-workspace .tx-table td{border-bottom-color:#e9f1fb}
+.transactions-workspace .tx-table tbody tr:hover{background:#f1f8ff}
+.transactions-workspace .tx-table tbody tr.selected{background:#eaf4ff;box-shadow:inset 3px 0 #2884ed}
+.transactions-workspace .tx-table tbody tr.needs-review-row{background:#fff8ed}
+.transactions-workspace .tx-table tbody tr.needs-review-row:hover,
+.transactions-workspace .tx-table tbody tr.needs-review-row.selected{background:#fff1df}
+.transactions-workspace .tx-table tbody tr.failed-row{background:#fff2f1}
+.transactions-workspace .tx-amount-cell{color:#145fb7;background-image:linear-gradient(135deg,#eff7ff,#e4f1ff);background-repeat:no-repeat;background-position:center;background-size:calc(100% - 14px) calc(100% - 16px);}
+.transactions-workspace .tx-date-cell{color:#55779e}
+.transactions-workspace .tx-date-cell small{color:#89a1bd}
+.transactions-workspace .tx-recipient-cell strong{color:#1b3555}
+.transactions-workspace .tx-icon-btn{color:#4778ad;border-radius:8px}
+.transactions-workspace .tx-icon-btn:hover{background:linear-gradient(135deg,#edf7ff,#dceeff);border-color:#cfe3f8;color:#1768c2}
+.transactions-workspace .tx-page-current{background:linear-gradient(135deg,#3292f5,#126bd6);box-shadow:0 3px 9px #1975df28}
+.transactions-workspace .tx-page-btn:hover:not(:disabled){background:#edf6ff;border-color:#c9e1fa;color:#2476cf}
+.transactions-workspace .tx-detail-panel{background:linear-gradient(180deg,#fff 0%,#fbfdff 100%)}
+.transactions-workspace .tx-detail-header h3{color:#1c416d}
+.transactions-workspace .tx-detail-amount{color:#126bd0!important}
+.transactions-workspace .tx-invoice-preview{background:linear-gradient(135deg,#edf6ff,#e1efff);border-color:#d6e7fa}
+.transactions-workspace .tx-invoice-empty{background:#f5faff;border-color:#cfe2f6;color:#7d98b6}
+.transactions-workspace .tx-bulk-bar{background:linear-gradient(135deg,#f5faff,#eaf4ff);border-color:#d3e5fa}
+.transactions-workspace .tx-bulk-bar button.primary{background:linear-gradient(135deg,#2d8df4,#0c63cf);border-color:#1674df;box-shadow:0 3px 9px #1975df20}
+.transactions-workspace .tx-copy-notice{background:linear-gradient(135deg,#eefbf5,#e0f7eb);border-color:#c8ecd8;color:#23784e}
+.transactions-workspace .tx-detail-toggle,
+.transactions-workspace .tx-detail-toggle:hover:not(:disabled){background:linear-gradient(135deg,#3292f5 0%,#176fdd 55%,#075cc7 100%);border-color:#176fdd;color:#fff;box-shadow:0 3px 10px #1874df28}
+.transactions-workspace .tx-detail-toggle:hover:not(:disabled){filter:brightness(1.04);transform:translateY(-1px)}
+.transactions-workspace .tx-subpage-tabs button.active{background:linear-gradient(135deg,#eaf5ff,#d9ecff);border-color:#c3ddfa;color:#1768c6;box-shadow:inset 0 1px 0 #ffffff90}
+.transactions-workspace .tx-subpage-tabs button.active .subpage-count{background:#cfe6ff;color:#1768c6}
+.transactions-workspace .tx-subpage-tabs .new-count{background:#d8ebff;color:#1768c6}
+.transactions-workspace .tx-date-options{background:#eef6ff;border-color:#d7e8fa}
+.transactions-workspace .tx-date-options button.active{background:linear-gradient(135deg,#fff,#e4f2ff);color:#1768c6;box-shadow:0 2px 6px #2379d414}
+.transactions-workspace .tx-account-menu button:hover,
+.transactions-workspace .tx-account-menu button.selected{background:linear-gradient(135deg,#eff7ff,#e1f0ff)}
+.transactions-workspace .tx-custom-range input:focus{border-color:#79b5f0;box-shadow:0 0 0 3px #2f7dd20e}
+@media(prefers-reduced-motion:reduce){.transactions-workspace *{transition:none!important;transform:none!important}}
+.transactions-workspace .tx-amount-cell{background:none}
+.transactions-workspace .tx-amount-pill{display:inline-block;border-radius:999px;padding:5px 10px;background:linear-gradient(135deg,#edf7ff 0%,#e3f1ff 100%);color:#145fb7;box-shadow:inset 0 1px 0 #ffffffb0;white-space:nowrap}
+/* Status tabs retain their own color language when selected, rather than all turning blue. */
+.transactions-workspace .tx-status-tabs button:nth-child(3).active{background:linear-gradient(135deg,#e9fbf2,#d8f6e7);border-color:#bdebd2;color:#168454}
+.transactions-workspace .tx-status-tabs button:nth-child(4).active{background:linear-gradient(135deg,#fff8eb,#ffedcf);border-color:#f5d9a8;color:#b46d0b}
+.transactions-workspace .tx-status-tabs button:nth-child(5).active{background:linear-gradient(135deg,#f3efff,#e5dcff);border-color:#d5c8ff;color:#6950c7}
+.transactions-workspace .tx-status-tabs button:nth-child(6).active{background:linear-gradient(135deg,#fff0f2,#ffe0e7);border-color:#f5c9d3;color:#c73c4d}
+
+/* Fix: active Terbaru contrast; all content remains white on the blue gradient */
+.transactions-workspace .tx-status-tabs button.active.tx-latest-tab,
+.transactions-workspace .tx-status-tabs button.active.tx-latest-tab .latest-icon,
+.transactions-workspace .tx-status-tabs button.active.tx-latest-tab .tx-tab-count,
+.transactions-workspace .tx-status-tabs button.active.tx-latest-tab .new-count{color:#fff!important;}
+.transactions-workspace .tx-status-tabs button.active.tx-latest-tab .tx-tab-count,
+.transactions-workspace .tx-status-tabs button.active.tx-latest-tab .new-count{background:#ffffff28!important;}
+.transactions-workspace .tx-status-tabs{position:relative;z-index:1;}
+.transactions-workspace .tx-page-header,
+.transactions-workspace .tx-toolbar,
+.transactions-workspace .tx-workspace-grid,
+.transactions-workspace .tx-bulk-bar,
+.transactions-workspace .tx-copy-notice,
+.transactions-workspace .tx-footnote{position:relative;z-index:1;}

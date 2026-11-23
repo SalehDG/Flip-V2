@@ -22,12 +22,37 @@ function parseDatabaseTimestamp(value: string | null): Date | null {
   const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? null : date;
 }
-function dateTimeLabel(value: string | null) { const date = parseDatabaseTimestamp(value); return date ? date.toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }) : value || '—'; }
+function dateTimeLabel(value: string | null) { const date = value ? new Date(value) : null; return date && !Number.isNaN(date.getTime()) ? date.toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }) : value || '—'; }
 function inputDate(value: string | null) { if (!value) return ''; if (value.includes('/')) { const [d,m,y] = value.split('/'); return `${y}-${m}-${d}`; } return value.slice(0,10); }
 function exportDate(value: string | null) { if (!value) return ''; const date = normalizeTransactionDate(value); return date ? `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}` : value; }
 function transactionGroupKey(row: ExtractionTransaction) {
   // Fee/code rows use synthetic Gmail IDs; strip their suffix so they group with the source email.
   return (row.gmailMessageId || `row-${row.id}`).split('::flip-component:')[0];
+}
+function rowPriority(row: ExtractionTransaction) {
+  const note = (row.transferNote ?? '').trim().toLowerCase();
+  if (note === 'kode flip') return 1;
+  if (note === 'biaya admin') return 2;
+  return 0; // Parent transfer row first, followed by generated fee/code rows.
+}
+function groupTimestampSortValue(group: ExtractionTransaction[]) {
+  return group.map(row => row.transactionTimestamp ? new Date(row.transactionTimestamp).getTime() : 0)
+    .find(value => Number.isFinite(value) && value > 0) ?? 0;
+}
+function compareGroupsInDisplayOrder(a: ExtractionTransaction[], b: ExtractionTransaction[]) {
+  return groupTimestampSortValue(b) - groupTimestampSortValue(a);
+}
+
+function groupRowsInDisplayOrder(sourceRows: ExtractionTransaction[]) {
+  const groups = new Map<string, ExtractionTransaction[]>();
+  for (const row of sourceRows) {
+    const key = transactionGroupKey(row);
+    const group = groups.get(key);
+    if (group) group.push(row); else groups.set(key, [row]);
+  }
+  return Array.from(groups.values())
+    .map(group => group.sort((a, b) => rowPriority(a) - rowPriority(b)))
+    .sort(compareGroupsInDisplayOrder);
 }
 function normalizeStatus(status: string) { return status.toLowerCase().replace(/[\s-]+/g, '_'); }
 function statusClass(status: string) { return normalizeStatus(status).replaceAll('_', '-'); }
@@ -125,34 +150,8 @@ export default function Transactions() {
   // Keep rows produced from the same Gmail message together (Transfer + Kode Flip + Biaya Admin).
   // Pagination is performed on message groups, then flattened for rendering, so child rows
   // can never be stranded on a different page from their parent.
-  const groupedRows = useMemo(() => {
-    const groups = new Map<string, ExtractionTransaction[]>();
-    for (const row of filteredRows) {
-      const key = transactionGroupKey(row);
-      const group = groups.get(key);
-      if (group) group.push(row); else groups.set(key, [row]);
-    }
-
-    const transactionDateSortValue = (group: ExtractionTransaction[]) => {
-      const validDate = group.map(row => normalizeTransactionDate(row.transactionDate))
-        .find(date => date !== null);
-      if (validDate) return validDate.getTime();
-      const timestamp = group.map(row => parseDatabaseTimestamp(row.createdAt))
-        .find(date => date !== null);
-      return timestamp?.getTime() ?? 0;
-    };
-    const rowPriority = (row: ExtractionTransaction) => {
-      const note = (row.transferNote ?? '').trim().toLowerCase();
-      if (note === 'kode flip') return 1;
-      if (note === 'biaya admin') return 2;
-      return 0; // Parent transfer row first.
-    };
-
-    return Array.from(groups.values())
-      .map(group => group.sort((a, b) => rowPriority(a) - rowPriority(b)))
-      .sort((a, b) => transactionDateSortValue(b) - transactionDateSortValue(a)
-        || (parseDatabaseTimestamp(b[0]?.createdAt)?.getTime() ?? 0) - (parseDatabaseTimestamp(a[0]?.createdAt)?.getTime() ?? 0));
-  }, [filteredRows]);
+  // This is the single source of truth for group and child-row ordering in the UI.
+  const groupedRows = useMemo(() => groupRowsInDisplayOrder(filteredRows), [filteredRows]);
   const pageCount = Math.max(1, Math.ceil(groupedRows.length / pageSize));
   const pageGroups = groupedRows.slice((page - 1) * pageSize, page * pageSize);
   const pageRows = pageGroups.flat();
@@ -180,7 +179,14 @@ export default function Transactions() {
   function toggleSelection(id: number) { setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }
   function toggleVisible() { const ids = pageRows.map(r => r.id); const all = ids.length > 0 && ids.every(id => selectedIds.includes(id)); setSelectedIds(prev => all ? prev.filter(id => !ids.includes(id)) : [...new Set([...prev, ...ids])]); }
   async function copyRows(sourceRows: ExtractionTransaction[], actionLabel: string) {
-    const eligible = sourceRows.filter(r => !['failed', 'duplicate_review'].includes(normalizeStatus(r.status)));
+    // Copy reverses the UI's newest-first group sequence, but never reverses rows
+    // inside a Gmail group. Parent transfer stays before Kode Flip/Admin exactly as shown.
+    const eligibleIds = new Set(sourceRows
+      .filter(row => !['failed', 'duplicate_review'].includes(normalizeStatus(row.status)))
+      .map(row => row.id));
+    const eligible = groupRowsInDisplayOrder(sourceRows)
+      .reverse()
+      .flatMap(group => group.filter(row => eligibleIds.has(row.id)));
     const reviewCount = eligible.filter(r => normalizeStatus(r.status) === 'needs_review').length;
     if (reviewCount && !window.confirm(`Ada ${reviewCount} transaksi yang perlu ditinjau. Tetap salin?`)) return;
     if (!eligible.length) { setCopyNotice('Tidak ada transaksi yang bisa disalin pada pilihan ini.'); return; }
@@ -211,11 +217,11 @@ export default function Transactions() {
       <button className="primary tx-copy-all" onClick={() => void copyAllFiltered()} disabled={!filteredRows.some(r => !['failed', 'duplicate_review'].includes(normalizeStatus(r.status)))}>▣ Copy semua <small>{filteredRows.filter(r => !['failed', 'duplicate_review'].includes(normalizeStatus(r.status))).length}</small></button>
     </div>
     <div className={`tx-workspace-grid ${detailOpen ? '' : 'detail-closed'}`}><div className="tx-main-panel"><div className="tx-table-scroll"><table className="tx-table"><thead><tr><th className="tx-check-col"><input type="checkbox" checked={pageRows.length > 0 && pageRows.every(r => selectedIds.includes(r.id))} onChange={toggleVisible} aria-label="Pilih semua di halaman"/></th><th>Tanggal</th><th>Penerima</th><th>Nominal</th><th>Catatan Transfer</th><th>Status</th><th>Aksi</th></tr></thead><tbody>
-    {pageRows.map(row => <tr key={row.id} className={`${selectedId === row.id ? 'selected' : ''} ${normalizeStatus(row.status) === 'needs_review' ? 'needs-review-row' : row.status === 'Failed' ? 'failed-row' : ''}`} onClick={() => { setSelectedId(row.id); setDetailOpen(true); }}><td className="tx-check-col" onClick={e => e.stopPropagation()}><input type="checkbox" checked={selectedIds.includes(row.id)} onChange={() => toggleSelection(row.id)} aria-label={`Pilih transaksi ${row.id}`}/></td><td className="tx-date-cell">{dateLabel(row.transactionDate)}<small>{dateTimeLabel(row.createdAt)}</small></td><td className="tx-recipient-cell"><strong>{row.recipientName || '—'}</strong></td><td className="tx-amount-cell">{formatAmount(row.amount)}</td><td className="tx-note-cell">{editingId === row.id ? <div className="tx-note-edit" onClick={e => e.stopPropagation()}><textarea value={noteDraft} onChange={e => setNoteDraft(e.target.value)} rows={2}/><div><button className="primary small" onClick={() => void saveNote(row.id)} disabled={savingId === row.id}>Simpan</button><button className="subtle small" onClick={() => setEditingId(null)}>Batal</button></div></div> : <><span>{row.transferNote || '—'}</span>{normalizeStatus(row.status) === 'needs_review' && <small className="tx-note-warning">Catatan perlu diperiksa</small>}</>}</td><td><span className={`status-chip ${statusClass(row.status)}`}>{labels[row.status] ?? row.status}</span></td><td className="tx-row-actions" onClick={e => e.stopPropagation()}>{normalizeStatus(row.status) === 'needs_review' ? <button className="primary small" onClick={() => openReview(row)}>Review</button> : <button className="tx-icon-btn" title="Edit seluruh transaksi" onClick={() => openReview(row)}>✎</button>}{normalizeStatus(row.status) === 'duplicate_review' && <button className="primary small" title="Merge transaksi duplikat" onClick={() => void mergeDuplicates(row.id)} disabled={savingId === row.id}>{savingId === row.id ? '…' : 'Merge'}</button>}{['failed','needs_review','duplicate_review'].includes(normalizeStatus(row.status)) && <button className="tx-icon-btn" title="Coba ulang" onClick={() => void retry(row.id)} disabled={savingId === row.id}>{savingId === row.id ? '…' : '↻'}</button>}<button className="tx-icon-btn" title="Detail transaksi" onClick={() => { setSelectedId(row.id); setDetailOpen(true); }}>⋮</button></td></tr>)}
+    {pageRows.map(row => <tr key={row.id} className={`${selectedId === row.id ? 'selected' : ''} ${normalizeStatus(row.status) === 'needs_review' ? 'needs-review-row' : row.status === 'Failed' ? 'failed-row' : ''}`} onClick={() => { setSelectedId(row.id); setDetailOpen(true); }}><td className="tx-check-col" onClick={e => e.stopPropagation()}><input type="checkbox" checked={selectedIds.includes(row.id)} onChange={() => toggleSelection(row.id)} aria-label={`Pilih transaksi ${row.id}`}/></td><td className="tx-date-cell">{dateLabel(row.transactionDate)}<small>{dateTimeLabel(row.transactionTimestamp)}</small></td><td className="tx-recipient-cell"><strong>{row.recipientName || '—'}</strong></td><td className="tx-amount-cell"><span className="tx-amount-pill">{formatAmount(row.amount)}</span></td><td className="tx-note-cell">{editingId === row.id ? <div className="tx-note-edit" onClick={e => e.stopPropagation()}><textarea value={noteDraft} onChange={e => setNoteDraft(e.target.value)} rows={2}/><div><button className="primary small" onClick={() => void saveNote(row.id)} disabled={savingId === row.id}>Simpan</button><button className="subtle small" onClick={() => setEditingId(null)}>Batal</button></div></div> : <><span>{row.transferNote || '—'}</span>{normalizeStatus(row.status) === 'needs_review' && <small className="tx-note-warning">Catatan perlu diperiksa</small>}</>}</td><td><span className={`status-chip ${statusClass(row.status)}`}>{labels[row.status] ?? row.status}</span></td><td className="tx-row-actions" onClick={e => e.stopPropagation()}>{normalizeStatus(row.status) === 'needs_review' ? <button className="primary small" onClick={() => openReview(row)}>Review</button> : <button className="tx-icon-btn" title="Edit seluruh transaksi" onClick={() => openReview(row)}>✎</button>}{normalizeStatus(row.status) === 'duplicate_review' && <button className="primary small" title="Merge transaksi duplikat" onClick={() => void mergeDuplicates(row.id)} disabled={savingId === row.id}>{savingId === row.id ? '…' : 'Merge'}</button>}{['failed','needs_review','duplicate_review'].includes(normalizeStatus(row.status)) && <button className="tx-icon-btn" title="Coba ulang" onClick={() => void retry(row.id)} disabled={savingId === row.id}>{savingId === row.id ? '…' : '↻'}</button>}<button className="tx-icon-btn" title="Detail transaksi" onClick={() => { setSelectedId(row.id); setDetailOpen(true); }}>⋮</button></td></tr>)}
     {!pageRows.length && <tr><td colSpan={7} className="empty-cell">{loading ? 'Memuat transaksi…' : 'Tidak ada transaksi yang cocok dengan filter.'}</td></tr>}
     </tbody></table></div><footer className="tx-pagination"><span>Menampilkan grup email {pageRowStart}–{pageRowEnd} dari {groupedRows.length.toLocaleString('id-ID')} grup <small>· {filteredRows.length.toLocaleString('id-ID')} baris transaksi · Seluruh data dimuat</small></span><div><button className="tx-page-btn" disabled={page<=1} onClick={() => setPage(p=>p-1)}>‹</button><span className="tx-page-current">{page}</span><span> / {pageCount}</span><button className="tx-page-btn" disabled={page>=pageCount} onClick={() => setPage(p=>p+1)}>›</button></div></footer></div>
     {detailOpen && !reviewRow && <aside className={`tx-detail-panel ${selectedRow ? '' : 'empty'}`}><div className="tx-detail-header"><div><h3>Detail Transaksi</h3><p>{selectedRow ? 'Informasi transaksi terpilih' : 'Pilih transaksi untuk melihat detail'}</p></div>{selectedRow && <button className="tx-close-detail" onClick={() => setDetailOpen(false)} aria-label="Tutup detail">×</button>}</div>
-    {selectedRow ? <><div className="tx-detail-status-line"><span className={`status-chip ${statusClass(selectedRow.status)}`}>{labels[selectedRow.status] ?? selectedRow.status}</span><span>{dateTimeLabel(selectedRow.createdAt)}</span></div><div className="tx-detail-fields"><div><label>Penerima</label><strong>{selectedRow.recipientName || 'Belum terbaca'}</strong></div><div><label>Nominal</label><strong className="tx-detail-amount">{formatAmount(selectedRow.amount)}</strong></div><div><label>Catatan Transfer</label><p>{selectedRow.transferNote || 'Belum ada catatan'}</p></div><div><label>Akun Gmail</label><p>{selectedRow.accountEmail || '—'}</p></div><div><label>Flip Transaction ID</label><p className="tx-detail-id">{selectedRow.flipTransactionId || 'Tidak tersedia'}</p></div><div><label>Alasan / Error</label><p className="tx-detail-reason">{selectedRow.reviewReason || selectedRow.lastError || 'Tidak ada catatan masalah.'}</p></div></div><div className="tx-detail-invoice"><div className="tx-detail-section-title"><strong>Lampiran Invoice</strong><span>{selectedRow.pngPath ? 'PNG' : 'Tidak tersedia'}</span></div>{selectedRow.pngPath ? <div className="tx-invoice-preview"><img src={convertFileSrc(selectedRow.pngPath)} alt="Lampiran invoice transaksi"/></div> : <div className="tx-invoice-empty">Lampiran PNG tidak tersedia untuk transaksi ini.</div>}</div><div className="tx-detail-actions">{selectedRow.status === 'Needs Review' && <button className="primary" onClick={() => openReview(selectedRow)}>Review & Edit</button>}<button className="subtle" onClick={() => openReview(selectedRow)}>Lihat Email Sumber</button><button className="subtle" onClick={() => openReview(selectedRow)}>Edit Transaksi</button>{['Failed','Needs Review','Duplicate Review'].includes(selectedRow.status) && <button className="subtle" onClick={() => void retry(selectedRow.id)} disabled={savingId===selectedRow.id}>{savingId===selectedRow.id ? 'Mencoba…' : 'Coba Ulang'}</button>}</div></> : <div className="tx-detail-empty-state"><span>⌁</span><strong>Belum ada transaksi dipilih</strong><p>Klik salah satu baris untuk melihat informasi lengkap dan lampiran.</p></div>}</aside>} </div>
+    {selectedRow ? <><div className="tx-detail-status-line"><span className={`status-chip ${statusClass(selectedRow.status)}`}>{labels[selectedRow.status] ?? selectedRow.status}</span><span>{dateTimeLabel(selectedRow.transactionTimestamp)}</span></div><div className="tx-detail-fields"><div><label>Penerima</label><strong>{selectedRow.recipientName || 'Belum terbaca'}</strong></div><div><label>Nominal</label><strong className="tx-detail-amount">{formatAmount(selectedRow.amount)}</strong></div><div><label>Catatan Transfer</label><p>{selectedRow.transferNote || 'Belum ada catatan'}</p></div><div><label>Akun Gmail</label><p>{selectedRow.accountEmail || '—'}</p></div><div><label>Flip Transaction ID</label><p className="tx-detail-id">{selectedRow.flipTransactionId || 'Tidak tersedia'}</p></div><div><label>Alasan / Error</label><p className="tx-detail-reason">{selectedRow.reviewReason || selectedRow.lastError || 'Tidak ada catatan masalah.'}</p></div></div><div className="tx-detail-invoice"><div className="tx-detail-section-title"><strong>Lampiran Invoice</strong><span>{selectedRow.pngPath ? 'PNG' : 'Tidak tersedia'}</span></div>{selectedRow.pngPath ? <div className="tx-invoice-preview"><img src={convertFileSrc(selectedRow.pngPath)} alt="Lampiran invoice transaksi"/></div> : <div className="tx-invoice-empty">Lampiran PNG tidak tersedia untuk transaksi ini.</div>}</div><div className="tx-detail-actions">{selectedRow.status === 'Needs Review' && <button className="primary" onClick={() => openReview(selectedRow)}>Review & Edit</button>}<button className="subtle" onClick={() => openReview(selectedRow)}>Lihat Email Sumber</button><button className="subtle" onClick={() => openReview(selectedRow)}>Edit Transaksi</button>{['Failed','Needs Review','Duplicate Review'].includes(selectedRow.status) && <button className="subtle" onClick={() => void retry(selectedRow.id)} disabled={savingId===selectedRow.id}>{savingId===selectedRow.id ? 'Mencoba…' : 'Coba Ulang'}</button>}</div></> : <div className="tx-detail-empty-state"><span>⌁</span><strong>Belum ada transaksi dipilih</strong><p>Klik salah satu baris untuk melihat informasi lengkap dan lampiran.</p></div>}</aside>} </div>
     {selectedIds.length>0 && <div className="tx-bulk-bar"><strong>{selectedIds.length} transaksi dipilih</strong><button className="subtle" onClick={() => setSelectedIds([])}>Batal Pilih</button><button className="primary" onClick={() => void copySelected()}>▣ Copy yang dipilih</button></div>}{copyNotice && <div className="tx-copy-notice" role="status">{copyNotice}<button onClick={() => setCopyNotice('')}>×</button></div>}<p className="tx-footnote">{subPage === 'latest' ? 'Terbaru menampilkan transaksi yang belum pernah di-copy.' : 'Data transaksi lokal · Catatan OCR dapat dikoreksi · Transaksi bermasalah dapat ditinjau ulang.'}</p>
       {reviewRow && (
         <>

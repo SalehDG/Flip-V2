@@ -428,9 +428,12 @@ fn save_message_and_attachments(
     transaction
         .execute(
             "INSERT OR IGNORE INTO transactions (
-                gmail_account_id, gmail_message_id, status
-             ) VALUES (?1, ?2, 'Detected')",
-            params![account_id, message.id],
+                gmail_account_id, gmail_message_id, status, transaction_timestamp
+             ) VALUES (
+                ?1, ?2, 'Detected',
+                strftime('%Y-%m-%dT%H:%M:%fZ', CAST(?3 AS INTEGER) / 1000, 'unixepoch')
+             )",
+            params![account_id, message.id, message.internal_date],
         )
         .map_err(|error| format!("Failed to create transaction record: {error}"))?;
 

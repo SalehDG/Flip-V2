@@ -1,6 +1,6 @@
 use rusqlite::{Connection, Result};
 
-const CURRENT_VERSION: i64 = 6;
+const CURRENT_VERSION: i64 = 8;
 
 pub fn run(connection: &mut Connection) -> Result<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -321,6 +321,40 @@ pub fn run(connection: &mut Connection) -> Result<()> {
              );"
         )?;
         transaction.pragma_update(None, "user_version", 6)?;
+        transaction.commit()?;
+    }
+
+    // Version 7 adds the transaction timestamp storage column.
+    if version < 7 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "ALTER TABLE transactions ADD COLUMN transaction_timestamp TEXT;
+             CREATE INDEX idx_transactions_timestamp ON transactions(transaction_timestamp);"
+        )?;
+        transaction.pragma_update(None, "user_version", 7)?;
+        transaction.commit()?;
+    }
+
+    // Version 8 replaces body-parsed timestamps with Gmail internalDate as the
+    // authoritative chronology source, including previously extracted records.
+    if version < 8 {
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE transactions
+             SET transaction_timestamp = (
+                 SELECT strftime('%Y-%m-%dT%H:%M:%fZ', CAST(m.internal_date AS INTEGER) / 1000, 'unixepoch')
+                 FROM gmail_messages m
+                 WHERE m.gmail_account_id = transactions.gmail_account_id
+                   AND m.gmail_message_id = substr(transactions.gmail_message_id, 1, instr(transactions.gmail_message_id || '::flip-component:', '::flip-component:') - 1)
+             )
+             WHERE EXISTS (
+                 SELECT 1 FROM gmail_messages m
+                 WHERE m.gmail_account_id = transactions.gmail_account_id
+                   AND m.gmail_message_id = substr(transactions.gmail_message_id, 1, instr(transactions.gmail_message_id || '::flip-component:', '::flip-component:') - 1)
+             )",
+            [],
+        )?;
+        transaction.pragma_update(None, "user_version", 8)?;
         transaction.commit()?;
     }
 

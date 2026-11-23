@@ -5,6 +5,7 @@
 pub struct EmailTransactionFields {
     pub transaction_id: Option<String>,
     pub transaction_date: Option<String>, // DD/MM/YYYY
+    pub transaction_timestamp: Option<String>, // Intentionally empty; Gmail internalDate is authoritative
     pub recipient_name: Option<String>,
     pub amount: Option<i64>, // transaction nominal, integer Rupiah
     pub admin_fee: Option<i64>,
@@ -19,6 +20,7 @@ pub fn parse_flip_email(_subject: Option<&str>, decoded_body: &str) -> EmailTran
     let normalized = normalize_body(decoded_body);
     let transaction_id = extract_transaction_id(&normalized);
     let transaction_date = extract_sent_date(&normalized);
+    let transaction_timestamp = None; // Transaction chronology is sourced exclusively from Gmail internalDate.
     let recipient_name = extract_recipient(&normalized);
     let amount = extract_amount(&normalized);
     let admin_fee = extract_labeled_amount(&normalized, &["Biaya Admin", "Admin Fee"]);
@@ -32,7 +34,7 @@ pub fn parse_flip_email(_subject: Option<&str>, decoded_body: &str) -> EmailTran
     if recipient_name.is_none() { review_reasons.push("Nama Tujuan tidak ditemukan.".to_string()); }
     if amount.is_none() { review_reasons.push("Nominal transfer tidak ditemukan atau ambigu.".to_string()); }
 
-    EmailTransactionFields { transaction_id, transaction_date, recipient_name, amount, admin_fee, unique_code, discount, email_transfer_note, review_reasons }
+    EmailTransactionFields { transaction_id, transaction_date, transaction_timestamp, recipient_name, amount, admin_fee, unique_code, discount, email_transfer_note, review_reasons }
 }
 
 
@@ -297,6 +299,7 @@ mod tests {
         assert_eq!(extract_sent_date("Waktu Terkirim 31 Feb 2026 12:00"), None);
         assert_eq!(extract_sent_date("Waktu Terkirim 29 Feb 2024 12:00"), Some("29/02/2024".into()));
     }
+
 
     #[test]
     fn supports_numeric_date_format() {

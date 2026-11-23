@@ -53,6 +53,7 @@ pub struct ExtractionTransactionRecord {
     pub gmail_message_id: String,
     pub flip_transaction_id: Option<String>,
     pub transaction_date: Option<String>,
+    pub transaction_timestamp: Option<String>,
     pub recipient_name: Option<String>,
     pub amount: Option<i64>,
     pub transfer_note: Option<String>,
@@ -348,7 +349,7 @@ pub fn list_extraction_transactions(
     let offset = i64::from(offset);
     let mut statement = connection.prepare(
         "SELECT t.id, t.gmail_account_id, a.email_address, t.gmail_message_id,
-                t.flip_transaction_id, t.transaction_date, t.recipient_name, t.amount,
+                t.flip_transaction_id, t.transaction_date, t.transaction_timestamp, t.recipient_name, t.amount,
                 t.transfer_note, t.ocr_raw_result, t.status, t.review_reason, t.last_error,
                 t.png_path, t.attempt_count, t.last_attempt_at, t.created_at, t.updated_at,
                 t.first_copied_at, t.last_copied_at
@@ -358,11 +359,11 @@ pub fn list_extraction_transactions(
     ).map_err(db_err)?;
     let rows = statement.query_map(params![status_filter, i64::from(limit), offset], |row| Ok(ExtractionTransactionRecord {
         id: row.get(0)?, gmail_account_id: row.get(1)?, account_email: row.get(2)?, gmail_message_id: row.get(3)?,
-        flip_transaction_id: row.get(4)?, transaction_date: row.get(5)?, recipient_name: row.get(6)?, amount: row.get(7)?,
-        transfer_note: row.get(8)?, ocr_raw_result: row.get(9)?, status: row.get(10)?, review_reason: row.get(11)?,
-        last_error: row.get(12)?, png_path: row.get(13)?, attempt_count: row.get(14)?, last_attempt_at: row.get(15)?,
-        created_at: row.get(16)?, updated_at: row.get(17)?,
-        first_copied_at: row.get(18)?, last_copied_at: row.get(19)?,
+        flip_transaction_id: row.get(4)?, transaction_date: row.get(5)?, transaction_timestamp: row.get(6)?, recipient_name: row.get(7)?, amount: row.get(8)?,
+        transfer_note: row.get(9)?, ocr_raw_result: row.get(10)?, status: row.get(11)?, review_reason: row.get(12)?,
+        last_error: row.get(13)?, png_path: row.get(14)?, attempt_count: row.get(15)?, last_attempt_at: row.get(16)?,
+        created_at: row.get(17)?, updated_at: row.get(18)?,
+        first_copied_at: row.get(19)?, last_copied_at: row.get(20)?,
     })).map_err(db_err)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
 }
@@ -529,19 +530,19 @@ fn create_email_fee_component_rows(
         let synthetic_message_id = format!("{}::flip-component:{}", item.message_id, kind.replace(' ', "_"));
         connection.execute(
             "INSERT OR IGNORE INTO transactions (
-                gmail_account_id, gmail_message_id, flip_transaction_id, transaction_date,
+                gmail_account_id, gmail_message_id, flip_transaction_id, transaction_date, transaction_timestamp,
                 recipient_name, amount, transfer_note, status, review_reason, png_path,
                 created_at, updated_at
-             ) VALUES (?1, ?2, NULL, ?3, NULL, ?4, ?5, ?6, ?7, NULL,
+             ) VALUES (?1, ?2, NULL, ?3, ?4, NULL, ?5, ?6, ?7, ?8, NULL,
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-            params![item.account_id, synthetic_message_id, parsed.transaction_date, amount, kind, component_status, component_review_reason],
+            params![item.account_id, synthetic_message_id, parsed.transaction_date, parsed.transaction_timestamp, amount, kind, component_status, component_review_reason],
         ).map_err(db_err)?;
         // Keep generated component rows fresh on retry, without touching copy tracking.
         connection.execute(
-            "UPDATE transactions SET transaction_date=COALESCE(?1,transaction_date), amount=?2,
-                transfer_note=?3, status=?4, review_reason=?5, last_error=NULL,
-                updated_at=CURRENT_TIMESTAMP WHERE gmail_account_id=?6 AND gmail_message_id=?7",
-            params![parsed.transaction_date, amount, kind, component_status, component_review_reason, item.account_id, synthetic_message_id],
+            "UPDATE transactions SET transaction_date=COALESCE(?1,transaction_date), transaction_timestamp=COALESCE(?2,transaction_timestamp), amount=?3,
+                transfer_note=?4, status=?5, review_reason=?6, last_error=NULL,
+                updated_at=CURRENT_TIMESTAMP WHERE gmail_account_id=?7 AND gmail_message_id=?8",
+            params![parsed.transaction_date, parsed.transaction_timestamp, amount, kind, component_status, component_review_reason, item.account_id, synthetic_message_id],
         ).map_err(db_err)?;
     }
     Ok(())
@@ -565,10 +566,10 @@ fn finalize_email_only_with_image(
     let mut connection = database.connection.lock().map_err(lock_err)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
     transaction.execute(
-        "UPDATE transactions SET flip_transaction_id=?1, transaction_date=?2, recipient_name=?3,
-            amount=?4, transfer_note=?5, ocr_raw_result=?6, png_path=NULLIF(?7,''), status=?8,
-            review_reason=?9, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?10",
-        params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount,
+        "UPDATE transactions SET flip_transaction_id=?1, transaction_date=?2, transaction_timestamp=COALESCE(?3,transaction_timestamp), recipient_name=?4,
+            amount=?5, transfer_note=?6, ocr_raw_result=?7, png_path=NULLIF(?8,''), status=?9,
+            review_reason=?10, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?11",
+        params![parsed.transaction_id, parsed.transaction_date, parsed.transaction_timestamp, parsed.recipient_name, parsed.amount,
             note, raw_text, image_path, status, reason, item.id],
     ).map_err(db_err)?;
     transaction.execute(
@@ -602,6 +603,13 @@ fn claim_transaction(database: &Database, id: i64, automatic: bool) -> Result<Op
     // Keep fields intact while processing; successful extraction may replace them,
     // while partial/review results use COALESCE to retain existing values.
     transaction.execute(
+        "UPDATE transactions SET transaction_timestamp=(
+            SELECT strftime('%Y-%m-%dT%H:%M:%fZ', CAST(internal_date AS INTEGER) / 1000, 'unixepoch')
+            FROM gmail_messages WHERE gmail_account_id=?1 AND gmail_message_id=?2
+         ), updated_at=CURRENT_TIMESTAMP WHERE id=?3",
+        params![account_id, message_id, id],
+    ).map_err(db_err)?;
+    transaction.execute(
         "UPDATE transactions SET status='Parsed',
             attempt_count=CASE WHEN ?1=1 THEN attempt_count+1 ELSE 0 END,
             last_attempt_at=CURRENT_TIMESTAMP, review_reason=NULL, last_error=NULL,
@@ -625,9 +633,10 @@ fn save_parsed_fields(database: &Database, id: i64, parsed: &super::email_parser
     connection.execute(
         "UPDATE transactions SET flip_transaction_id=COALESCE(?1, flip_transaction_id),
             transaction_date=COALESCE(?2, transaction_date),
-            recipient_name=COALESCE(?3, recipient_name),
-            amount=COALESCE(?4, amount), transfer_note=COALESCE(?5, transfer_note), updated_at=CURRENT_TIMESTAMP WHERE id=?6",
-        params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount, parsed.email_transfer_note, id],
+            transaction_timestamp=COALESCE(?3, transaction_timestamp),
+            recipient_name=COALESCE(?4, recipient_name),
+            amount=COALESCE(?5, amount), transfer_note=COALESCE(?6, transfer_note), updated_at=CURRENT_TIMESTAMP WHERE id=?7",
+        params![parsed.transaction_id, parsed.transaction_date, parsed.transaction_timestamp, parsed.recipient_name, parsed.amount, parsed.email_transfer_note, id],
     ).map_err(db_err)?;
     Ok(())
 }
@@ -748,10 +757,10 @@ fn finalize_with_duplicate_check(
     let status = if duplicate { "Duplicate Review" } else { "Completed" };
     let reason = if duplicate { Some("Flip Transaction ID terdeteksi pada Message lain." ) } else { None };
     transaction.execute(
-        "UPDATE transactions SET flip_transaction_id=?1, transaction_date=?2, recipient_name=?3,
-            amount=?4, transfer_note=?5, ocr_raw_result=?6, png_path=?7, status=?8,
-            review_reason=?9, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?10",
-        params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount, transfer_note, raw_text, image_path, status, reason, item.id],
+        "UPDATE transactions SET flip_transaction_id=?1, transaction_date=?2, transaction_timestamp=COALESCE(?3,transaction_timestamp), recipient_name=?4,
+            amount=?5, transfer_note=?6, ocr_raw_result=?7, png_path=?8, status=?9,
+            review_reason=?10, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?11",
+        params![parsed.transaction_id, parsed.transaction_date, parsed.transaction_timestamp, parsed.recipient_name, parsed.amount, transfer_note, raw_text, image_path, status, reason, item.id],
     ).map_err(db_err)?;
     if duplicate {
         let _ = auto_merge_complementary(&transaction, parsed.transaction_id.as_deref().unwrap_or_default())?;
