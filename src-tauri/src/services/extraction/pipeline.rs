@@ -11,7 +11,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 use crate::{databases::Database, services::ocr::{run_tesseract, OcrExtractionStatus, TesseractOptions}};
-use super::email_parser::parse_flip_email;
+use crate::services::extraction::email_parser::parse_flip_email;
 use super::merge::auto_merge_complementary;
 
 
@@ -517,7 +517,7 @@ fn process_one(
 fn create_email_fee_component_rows(
     database: &Database,
     item: &PendingItem,
-    parsed: &super::email_parser::EmailTransactionFields,
+    parsed: &crate::services::extraction::email_parser::EmailTransactionFields,
 ) -> Result<(), String> {
     let admin_net = parsed.admin_fee.unwrap_or(0).saturating_sub(parsed.discount.unwrap_or(0)).max(0);
     let mut components: Vec<(&str, i64)> = Vec::new();
@@ -552,7 +552,7 @@ fn create_email_fee_component_rows(
 
 
 fn finalize_email_only(
-    database: &Database, item: &PendingItem, parsed: &super::email_parser::EmailTransactionFields,
+    database: &Database, item: &PendingItem, parsed: &crate::services::extraction::email_parser::EmailTransactionFields,
     note: &str, app: Option<&AppHandle>,
 ) -> Result<Option<String>, String> {
     finalize_email_only_with_image(database, item, parsed, note, "Email body fallback", "", app)
@@ -560,7 +560,7 @@ fn finalize_email_only(
 
 
 fn finalize_email_only_with_image(
-    database: &Database, item: &PendingItem, parsed: &super::email_parser::EmailTransactionFields,
+    database: &Database, item: &PendingItem, parsed: &crate::services::extraction::email_parser::EmailTransactionFields,
     note: &str, raw_text: &str, image_path: &str, app: Option<&AppHandle>,
 ) -> Result<Option<String>, String> {
     let status = if parsed.review_reasons.is_empty() { "Completed" } else { "Needs Review" };
@@ -628,7 +628,7 @@ fn claim_transaction(database: &Database, id: i64, automatic: bool) -> Result<Op
 }
 
 
-fn save_parsed_fields(database: &Database, id: i64, parsed: &super::email_parser::EmailTransactionFields) -> Result<(), String> {
+fn save_parsed_fields(database: &Database, id: i64, parsed: &crate::services::extraction::email_parser::EmailTransactionFields) -> Result<(), String> {
     let connection = database.connection.lock().map_err(lock_err)?;
     // Partial re-extraction must not overwrite previously stored values with NULL.
     // Only newly parsed non-NULL fields replace the existing transaction fields.
@@ -741,7 +741,7 @@ fn finish_review(
 fn finalize_with_duplicate_check(
     database: &Database,
     item: &PendingItem,
-    parsed: &super::email_parser::EmailTransactionFields,
+    parsed: &crate::services::extraction::email_parser::EmailTransactionFields,
     transfer_note: &Option<String>,
     raw_text: &str,
     image_path: &str,
@@ -893,7 +893,7 @@ fn is_flip_transfer_confirmation_email(body: &str) -> bool {
 fn is_multi_destination_instruction_email(body: &str) -> bool {
     // Detailed Flip payment instructions are intentionally ledgered: the email
     // contains Nominal, Kode Unik, Admin Fee and a transfer total.
-    if super::email_parser::is_flip_fee_payment_template(body) { return false; }
+    if crate::services::extraction::email_parser::is_flip_fee_payment_template(body) { return false; }
     let normalized = body.to_ascii_lowercase();
     let has_multi_destination_phrase = normalized.contains("transaksi ke banyak tujuan")
         || normalized.contains("buat transaksi ke banyak tujuan")
@@ -1006,7 +1006,7 @@ mod tests {
     fn fee_components_create_code_and_admin_rows_when_admin_is_not_discounted() {
         let (database, path) = create_test_database();
         let item = PendingItem { id: 1, account_id: 1, message_id: "message-1".to_string(), subject: None, internal_date: Some("23/11/2026".to_string()), payload_json: "{}".to_string() };
-        let parsed = super::email_parser::parse_flip_email(None, "Informasi Transaksi\nID Transaksi\n#CS261123103326704Y5ULUO\nWaktu Terkirim\n23 November 2026 13:30 WIB\nNama Tujuan\nFLIPTECH LENTERA INS\nNominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nJumlah Transfer\nRp2.163.525");
+        let parsed = crate::services::extraction::email_parser::parse_flip_email(None, "Informasi Transaksi\nID Transaksi\n#CS261123103326704Y5ULUO\nWaktu Terkirim\n23 November 2026 13:30 WIB\nNama Tujuan\nFLIPTECH LENTERA INS\nNominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nJumlah Transfer\nRp2.163.525");
         create_email_fee_component_rows(&database, &item, &parsed).unwrap();
         let connection = database.connection.lock().unwrap();
         let rows: Vec<(String, i64, String)> = connection.prepare("SELECT transfer_note,amount,status FROM transactions WHERE gmail_message_id LIKE 'message-1::flip-component:%' ORDER BY id").unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap().collect::<Result<_,_>>().unwrap();
@@ -1020,7 +1020,7 @@ mod tests {
     fn fee_component_discount_removes_admin_row_but_keeps_unique_code() {
         let (database, path) = create_test_database();
         let item = PendingItem { id: 1, account_id: 1, message_id: "message-1".to_string(), subject: None, internal_date: Some("23/11/2026".to_string()), payload_json: "{}".to_string() };
-        let parsed = super::email_parser::parse_flip_email(None, "Informasi Transaksi\nID Transaksi\n#CS261123103326704Y5ULUO\nWaktu Terkirim\n23 November 2026 13:30 WIB\nNama Tujuan\nFLIPTECH LENTERA INS\nNominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nDiskon\n--Rp4.000\nJumlah Transfer\nRp2.159.525");
+        let parsed = crate::services::extraction::email_parser::parse_flip_email(None, "Informasi Transaksi\nID Transaksi\n#CS261123103326704Y5ULUO\nWaktu Terkirim\n23 November 2026 13:30 WIB\nNama Tujuan\nFLIPTECH LENTERA INS\nNominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nDiskon\n--Rp4.000\nJumlah Transfer\nRp2.159.525");
         create_email_fee_component_rows(&database, &item, &parsed).unwrap();
         let connection = database.connection.lock().unwrap();
         let rows: Vec<(String, i64)> = connection.prepare("SELECT transfer_note,amount FROM transactions WHERE gmail_message_id LIKE 'message-1::flip-component:%' ORDER BY id").unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?))).unwrap().collect::<Result<_,_>>().unwrap();
@@ -1171,9 +1171,10 @@ mod tests {
                 [],
             ).unwrap();
         }
-        let partial = super::email_parser::EmailTransactionFields {
+        let partial = crate::services::extraction::email_parser::EmailTransactionFields {
             transaction_id: None,
             transaction_date: Some("02/01/2026".to_string()),
+            transaction_timestamp: None,
             recipient_name: None,
             amount: None,
             admin_fee: None,
