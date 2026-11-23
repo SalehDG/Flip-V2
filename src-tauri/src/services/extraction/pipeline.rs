@@ -286,16 +286,18 @@ pub fn correct_transaction_fields(
     let recipient = recipient_name.trim();
     let flip_id = flip_transaction_id.trim();
     let note = transfer_note.trim();
-    if date.is_empty() || recipient.is_empty() || flip_id.is_empty() || amount <= 0 {
-        return Err("Tanggal, nama penerima, Transaction ID, dan nominal harus valid.".into());
+    if amount <= 0 {
+        return Err("Nominal harus lebih dari 0.".into());
     }
-    let normalized_date = if date.contains('/') {
+    let normalized_date = if date.is_empty() {
+        None
+    } else if date.contains('/') {
         let parts: Vec<_> = date.split('/').collect();
         if parts.len() == 3 && parts[0].len() == 2 && parts[1].len() == 2 && parts[2].len() == 4 {
-            format!("{}/{}/{}", parts[0], parts[1], parts[2])
+            Some(format!("{}/{}/{}", parts[0], parts[1], parts[2]))
         } else { return Err("Format tanggal tidak valid. Gunakan YYYY-MM-DD.".into()); }
     } else if date.len() == 10 && date.chars().nth(4) == Some('-') {
-        format!("{}/{}/{}", &date[8..10], &date[5..7], &date[0..4])
+        Some(format!("{}/{}/{}", &date[8..10], &date[5..7], &date[0..4]))
     } else { return Err("Format tanggal tidak valid. Gunakan YYYY-MM-DD.".into()); };
 
     let mut connection = database.connection.lock().map_err(lock_err)?;
@@ -309,7 +311,7 @@ pub fn correct_transaction_fields(
         return Err(format!("Transaksi tidak dapat dikoreksi dari status {current_status}."));
     }
     let values = [
-        ("transaction_date", old_date.unwrap_or_default(), normalized_date.clone()),
+        ("transaction_date", old_date.unwrap_or_default(), normalized_date.clone().unwrap_or_default()),
         ("recipient_name", old_recipient.unwrap_or_default(), recipient.to_string()),
         ("flip_transaction_id", old_flip.unwrap_or_default(), flip_id.to_string()),
         ("amount", old_amount.map(|v| v.to_string()).unwrap_or_default(), amount.to_string()),
@@ -321,7 +323,7 @@ pub fn correct_transaction_fields(
                 params![transaction_id, field, old_value, new_value]).map_err(db_err)?;
         }
     }
-    let duplicate: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM transactions WHERE flip_transaction_id=?1 AND id<>?2)", params![flip_id,transaction_id], |row| row.get(0)).map_err(db_err)?;
+    let duplicate: bool = if flip_id.is_empty() { false } else { tx.query_row("SELECT EXISTS(SELECT 1 FROM transactions WHERE flip_transaction_id=?1 AND id<>?2)", params![flip_id,transaction_id], |row| row.get(0)).map_err(db_err)? };
     let status = if duplicate { "Duplicate Review" } else { "Completed" };
     let reason = if duplicate { Some("Flip Transaction ID terdeteksi duplikat setelah koreksi." ) } else { None };
     tx.execute("UPDATE transactions SET transaction_date=?1,recipient_name=?2,flip_transaction_id=?3,amount=?4,transfer_note=?5,status=?6,review_reason=?7,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?8",

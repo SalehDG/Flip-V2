@@ -101,7 +101,7 @@ export default function Transactions() {
   const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [savingId, setSavingId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null); const [noteDraft, setNoteDraft] = useState('');
   const [reviewRow, setReviewRow] = useState<ExtractionTransaction | null>(null);
-  const [reviewDraft, setReviewDraft] = useState({ date: '', recipient: '', transactionId: '', amount: '', note: '' }); const [reviewError, setReviewError] = useState('');
+  const [reviewDraft, setReviewDraft] = useState({ date: '', recipient: '', transactionId: '', amount: '', note: '' }); const [reviewError, setReviewError] = useState(''); const [reviewPreviewOpen, setReviewPreviewOpen] = useState(false);
   const [messageOpen, setMessageOpen] = useState(true); const [invoiceOpen, setInvoiceOpen] = useState(true); const [messageBody, setMessageBody] = useState(''); const [messageLoading, setMessageLoading] = useState(false); const [messageError, setMessageError] = useState(''); const [copyNotice, setCopyNotice] = useState(''); const [detailInvoiceDataUrl, setDetailInvoiceDataUrl] = useState(''); const [detailInvoiceLoading, setDetailInvoiceLoading] = useState(false); const [detailInvoiceError, setDetailInvoiceError] = useState(''); const [reviewInvoiceDataUrl, setReviewInvoiceDataUrl] = useState(''); const [reviewInvoiceLoading, setReviewInvoiceLoading] = useState(false); const [reviewInvoiceError, setReviewInvoiceError] = useState(''); const [zoomInvoiceSrc, setZoomInvoiceSrc] = useState('');
   // Load transactions in batches. The old single request capped the page at 250 rows,
   // which caused older statuses to appear as zero even though they existed in SQLite.
@@ -203,7 +203,8 @@ export default function Transactions() {
   function beginEdit(row: ExtractionTransaction) { setEditingId(row.id); setNoteDraft(row.transferNote ?? ''); }
   function openReview(row: ExtractionTransaction) { setReviewError(''); setMessageOpen(true); setInvoiceOpen(true); setReviewRow(row); setReviewDraft({ date: inputDate(row.transactionDate), recipient: row.recipientName ?? '', transactionId: row.flipTransactionId ?? '', amount: row.amount == null ? '' : String(row.amount), note: row.transferNote ?? '' }); }
   async function saveNote(id: number) { setSavingId(id); setError(''); try { await transactionService.correctNote(id, noteDraft.trim()); setEditingId(null); await load(); } catch (e) { setError(String(e)); } finally { setSavingId(null); } }
-  async function saveReviewCorrection() { if (!reviewRow) return; const amount = parseReviewAmount(reviewDraft.amount); if (!reviewDraft.date || !reviewDraft.recipient.trim() || !reviewDraft.transactionId.trim() || !Number.isSafeInteger(amount) || amount <= 0) { setReviewError('Tanggal, nama, Transaction ID, dan nominal wajib valid. Periksa kembali data di panel ini.'); return; } setSavingId(reviewRow.id); setReviewError(''); setError(''); try { const status = await transactionService.saveCorrection({ transactionId: reviewRow.id, transactionDate: reviewDraft.date, recipientName: reviewDraft.recipient.trim(), flipTransactionId: reviewDraft.transactionId.trim(), amount, transferNote: reviewDraft.note.trim() }); setReviewRow(null); await load(); setCopyNotice(status === 'Completed' ? 'Koreksi tersimpan. Transaksi berstatus Completed.' : 'Koreksi tersimpan, tetapi Transaction ID terdeteksi duplikat.'); } catch (e) { setReviewError(String(e)); } finally { setSavingId(null); } }
+  function openReviewPreview() { if (!reviewRow) return; const amount = parseReviewAmount(reviewDraft.amount); if (!Number.isSafeInteger(amount) || amount <= 0) { setReviewError('Nominal wajib diisi dengan angka lebih dari 0.'); return; } setReviewError(''); setReviewPreviewOpen(true); }
+  async function saveReviewCorrection() { if (!reviewRow) return; const amount = parseReviewAmount(reviewDraft.amount); if (!Number.isSafeInteger(amount) || amount <= 0) { setReviewError('Nominal wajib diisi dengan angka lebih dari 0.'); setReviewPreviewOpen(false); return; } setSavingId(reviewRow.id); setReviewError(''); setError(''); try { const status = await transactionService.saveCorrection({ transactionId: reviewRow.id, transactionDate: reviewDraft.date, recipientName: reviewDraft.recipient.trim(), flipTransactionId: reviewDraft.transactionId.trim(), amount, transferNote: reviewDraft.note.trim() }); setReviewPreviewOpen(false); setReviewRow(null); await load(); setCopyNotice(status === 'Completed' ? 'Koreksi tersimpan. Transaksi berstatus Completed.' : 'Koreksi tersimpan, tetapi Transaction ID terdeteksi duplikat.'); } catch (e) { setReviewError(String(e)); setReviewPreviewOpen(false); } finally { setSavingId(null); } }
   function toggleSelection(id: number) { setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }
   function toggleVisible() { const ids = pageRows.map(r => r.id); const all = ids.length > 0 && ids.every(id => selectedIds.includes(id)); setSelectedIds(prev => all ? prev.filter(id => !ids.includes(id)) : [...new Set([...prev, ...ids])]); }
   async function copyRows(sourceRows: ExtractionTransaction[], actionLabel: string) {
@@ -262,8 +263,11 @@ export default function Transactions() {
           .review-content{display:grid;grid-template-columns:minmax(330px,430px) minmax(0,1fr);gap:18px;padding:18px;flex:1;min-height:0}
           .review-source-column{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}
           .source-panel{background:white;border:1px solid #e0e9f3;border-radius:15px;overflow:hidden;display:flex;flex-direction:column;min-width:0}
-          .source-panel.message-panel{flex:0 0 auto}
-          .source-panel.invoice-panel{flex:1;min-height:0}
+          .source-panel.message-panel{flex:0 0 auto;min-height:0}
+          .source-panel.invoice-panel{flex:1 1 auto;min-height:0}
+          .source-panel.message-panel .source-panel-content{max-height:min(42vh,360px);overflow:auto}
+          .source-panel.invoice-panel.is-collapsed{flex:0 0 auto;min-height:auto;height:auto}
+          .source-panel.invoice-panel.is-expanded{flex:1 1 0;min-height:180px;max-height:100%}
           .source-panel-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 15px;border:0;background:white;color:#23374e;text-align:left;cursor:pointer}
           .source-panel-toggle strong{font-size:13px}
           .source-panel-toggle span{font-size:11px;color:#8190a4}
@@ -276,20 +280,25 @@ export default function Transactions() {
           .message-loading{color:#718198;background:#f5f8fc;border:1px dashed #d6e2ef}
           .message-error{color:#9a4e43;background:#fff1ef;border:1px solid #f2d4ce;overflow-wrap:anywhere}
           .message-reason{font-size:12px;color:#a36c18;background:#fff8e9;border-radius:8px;padding:9px 10px;margin-top:10px}
-          .source-panel .invoice-canvas{min-height:220px}
+          .source-panel .invoice-canvas{min-height:0;max-height:100%;height:100%;overflow:auto;overscroll-behavior:contain}
           .review-form{background:white;border:1px solid #e0e9f3;border-radius:15px;padding:18px;overflow:auto;display:flex;flex-direction:column;gap:13px}
           .review-form label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:700;color:#516780}
           .review-form input,.review-form textarea{font:inherit;font-size:14px;font-weight:500;color:#172b45;background:#fbfdff;border:1px solid #dce6f0;border-radius:9px;padding:10px 11px;outline:none;width:100%;box-sizing:border-box}
           .review-form input:focus,.review-form textarea:focus{border-color:#6ba8ec;box-shadow:0 0 0 3px rgba(75,145,220,.12)}.review-form textarea{resize:vertical}
           .review-validation-error{font-size:12px;line-height:1.5;color:#a93630;background:#fff0ef;border:1px solid #f1d1cd;padding:10px;border-radius:10px}
-          .review-save-notice{font-size:12px;line-height:1.5;color:#76591d;background:#fff8e6;border:1px solid #f1dfae;padding:10px;border-radius:10px}
+          .review-save-notice{font-size:12px;line-height:1.5;color:#536984;background:#f5f9ff;border:1px solid #dce8f6;padding:10px;border-radius:10px}
+          .review-preview-overlay{position:fixed;inset:0;z-index:2147483100;background:rgba(12,24,44,.55);display:flex;align-items:center;justify-content:center;padding:18px}
+          .review-preview-modal{width:min(760px,94vw);max-height:90vh;overflow:auto;background:white;border:1px solid #dce7f3;border-radius:16px;box-shadow:0 24px 70px rgba(10,35,70,.28);padding:20px;color:#172b45}
+          .review-preview-modal h3{margin:0 0 6px}.review-preview-modal p{margin:0 0 14px;color:#718198;font-size:13px}
+          .review-preview-table{width:100%;border-collapse:collapse;font-size:13px}.review-preview-table th,.review-preview-table td{padding:9px 10px;border-bottom:1px solid #e5edf5;text-align:left;vertical-align:top;overflow-wrap:anywhere}.review-preview-table th{background:#f5f9ff;color:#526982}
+          .review-preview-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
           .review-save-disabled{opacity:.55;cursor:not-allowed;justify-content:center;width:100%}
           .invoice-panel{display:flex;flex-direction:column;min-width:0;background:white;border:1px solid #e0e9f3;border-radius:15px;overflow:hidden}
           .invoice-toolbar{height:46px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;border-bottom:1px solid #e5edf5;font-size:13px}.invoice-toolbar span{font-size:11px;color:#8291a5}
-          .invoice-canvas{flex:1;min-height:0;overflow:auto;background:#edf3f9;display:flex;align-items:flex-start;justify-content:center;padding:16px}
+          .invoice-canvas{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;background:#edf3f9;display:flex;align-items:flex-start;justify-content:center;padding:16px}
           .invoice-canvas img{max-width:100%;height:auto;object-fit:contain;box-shadow:0 5px 20px rgba(24,45,70,.14);background:white;border-radius:5px}
           .invoice-empty{margin:auto;text-align:center;color:#8291a5}.invoice-empty span{font-size:40px}.invoice-empty strong{display:block;color:#536984;margin:8px}.invoice-empty p{font-size:12px}
-          @media(max-width:760px){.review-overlay{padding:8px}.review-modal{height:96vh;width:100%;border-radius:14px}.review-header{padding:14px}.review-content{grid-template-columns:1fr;grid-template-rows:auto auto;overflow:auto;padding:10px;gap:10px}.review-form{overflow:visible}.review-source-column{min-height:0}.source-panel.invoice-panel{min-height:320px}.invoice-canvas img{max-height:none}}
+          @media(max-width:760px){.review-overlay{padding:8px}.review-modal{height:96vh;width:100%;border-radius:14px}.review-header{padding:14px}.review-content{grid-template-columns:1fr;grid-template-rows:auto auto;overflow:auto;padding:10px;gap:10px}.review-form{overflow:visible}.review-source-column{min-height:0}.source-panel.invoice-panel.is-expanded{min-height:320px}.source-panel.invoice-panel.is-collapsed{min-height:0}.invoice-canvas img{max-height:none}}
         `}</style>
         <div className="review-overlay" role="dialog" aria-modal="true" aria-label="Review transaksi">
           <div className="review-modal">
@@ -306,7 +315,7 @@ export default function Transactions() {
                 <label>Catatan transfer / Uraian<textarea rows={4} value={reviewDraft.note} onChange={e => setReviewDraft(d => ({ ...d, note: e.target.value }))} placeholder="Uraian transfer"/></label>
                 {reviewError && <div className="review-validation-error" role="alert">{reviewError}</div>}
                 <div className="review-save-notice">Semua perubahan akan dicatat ke riwayat koreksi. Transaction ID duplikat tetap ditandai untuk review.</div>
-                <button type="button" className="primary" disabled={savingId === reviewRow.id} onClick={() => void saveReviewCorrection()}>{savingId === reviewRow.id ? 'Menyimpan…' : 'Simpan Koreksi'}</button>
+                <button type="button" className="primary" disabled={savingId === reviewRow.id} onClick={openReviewPreview}>{savingId === reviewRow.id ? 'Menyimpan…' : 'Simpan & Periksa'}</button>
               </form>
               <div className="review-source-column">
                 <section className="source-panel message-panel">
@@ -326,9 +335,9 @@ export default function Transactions() {
                     {reviewRow.lastError && <div className="message-reason"><strong>Error terakhir:</strong> {reviewRow.lastError}</div>}
                   </div>}
                 </section>
-                <section className="source-panel invoice-panel">
+                <section className={`source-panel invoice-panel ${invoiceOpen ? 'is-expanded' : 'is-collapsed'}`}>
                   <button className="source-panel-toggle" type="button" onClick={() => setInvoiceOpen(open => !open)} aria-expanded={invoiceOpen}>
-                    <strong>Invoice</strong><span>{reviewRow.pngPath ? 'PNG attachment' : 'Tidak tersedia'} · {invoiceOpen ? 'Tutup ▲' : 'Buka ▼'}</span>
+                    <strong>Invoice</strong><span>{invoiceOpen ? 'Tutup ▲' : 'Buka ▼'}</span>
                   </button>
                   {invoiceOpen && <div className="invoice-canvas">
                     {reviewRow.pngPath ? (reviewInvoiceLoading ? <div className="invoice-empty"><strong>Memuat invoice…</strong></div> : reviewInvoiceError ? <div className="invoice-empty"><strong>Invoice gagal dimuat</strong><p>{reviewInvoiceError}</p></div> : reviewInvoiceDataUrl ? <img src={reviewInvoiceDataUrl} alt="Invoice transaksi" className="invoice-zoomable" onClick={() => setZoomInvoiceSrc(reviewInvoiceDataUrl)} title="Klik untuk memperbesar invoice"/> : <div className="invoice-empty"><span>▧</span><strong>Invoice tidak tersedia</strong></div>) : <div className="invoice-empty"><span>▧</span><strong>Invoice tidak ditemukan</strong><p>File invoice belum tersimpan untuk transaksi ini.</p></div>}
@@ -339,6 +348,17 @@ export default function Transactions() {
           </div>
         </div>
         </>, document.body
+      )}
+      {reviewPreviewOpen && reviewRow && createPortal(
+        <div className="review-preview-overlay" role="dialog" aria-modal="true" aria-label="Preview koreksi transaksi" onClick={() => setReviewPreviewOpen(false)}>
+          <div className="review-preview-modal" onClick={e => e.stopPropagation()}>
+            <h3>Konfirmasi perubahan transaksi</h3><p>Bandingkan data sebelum dan sesudah. Hanya nominal yang wajib valid; field lain boleh kosong.</p>
+            <table className="review-preview-table"><thead><tr><th>Field</th><th>Sebelum</th><th>Sesudah</th></tr></thead><tbody>
+              {[['Tanggal', dateLabel(reviewRow.transactionDate), reviewDraft.date ? dateLabel(reviewDraft.date) : '—'],['Nama penerima',reviewRow.recipientName || '—',reviewDraft.recipient.trim() || '—'],['Flip Transaction ID',reviewRow.flipTransactionId || '—',reviewDraft.transactionId.trim() || '—'],['Nominal',formatAmount(reviewRow.amount),formatAmount(parseReviewAmount(reviewDraft.amount))],['Catatan transfer / Uraian',reviewRow.transferNote || '—',reviewDraft.note.trim() || '—']].map(([field,before,after]) => <tr key={field}><td><strong>{field}</strong></td><td>{before}</td><td>{after}</td></tr>)}
+            </tbody></table>
+            <div className="review-preview-actions"><button type="button" className="subtle" onClick={() => setReviewPreviewOpen(false)}>Kembali edit</button><button type="button" className="primary" disabled={savingId === reviewRow.id} onClick={() => void saveReviewCorrection()}>{savingId === reviewRow.id ? 'Menyimpan…' : 'Konfirmasi & Simpan'}</button></div>
+          </div>
+        </div>, document.body
       )}
       {zoomInvoiceSrc && createPortal(
         <div className="invoice-zoom-overlay" role="dialog" aria-modal="true" aria-label="Perbesar invoice" onClick={() => setZoomInvoiceSrc('')}>
