@@ -1245,7 +1245,7 @@ pub fn mark_transactions_copied(database: &Database, transaction_ids: &[i64]) ->
     let mut updated = 0usize;
     for id in transaction_ids.iter().copied().filter(|id| *id > 0) {
         updated += transaction.execute(
-            "UPDATE transactions SET first_copied_at=COALESCE(first_copied_at, strftime('%Y-%m-%d %H:%M:%f','now')), last_copied_at=strftime('%Y-%m-%d %H:%M:%f','now'), retention_until=COALESCE(retention_until, datetime(COALESCE(first_copied_at, strftime('%Y-%m-%d %H:%M:%f','now')), '+' || COALESCE((SELECT CAST(setting_value AS INTEGER) FROM app_settings WHERE setting_key='retention_period'), 7) || ' days')), updated_at=datetime('now') WHERE id=?1 AND status IN ('Completed','Needs Review')",
+            "UPDATE transactions SET first_copied_at=COALESCE(first_copied_at, strftime('%Y-%m-%d %H:%M:%f','now')), last_copied_at=strftime('%Y-%m-%d %H:%M:%f','now'), retention_until=datetime('now', '+' || COALESCE((SELECT CAST(setting_value AS INTEGER) FROM app_settings WHERE setting_key='retention_period'), 7) || ' days'), updated_at=datetime('now') WHERE id=?1 AND status IN ('Completed','Needs Review')",
             params![id],
         ).map_err(db_err)?;
     }

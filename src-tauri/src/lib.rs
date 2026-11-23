@@ -148,6 +148,7 @@ pub fn run() {
             commands::settings_commands::get_monitoring_settings,
             commands::settings_commands::set_monitoring_settings,
             commands::settings_commands::get_storage_info,
+            commands::settings_commands::open_storage_directory,
             gmail_auth::oauth_session::start_gmail_oauth,
             gmail_auth::oauth_session::complete_gmail_oauth,
             gmail_auth::oauth_session::cancel_gmail_oauth,

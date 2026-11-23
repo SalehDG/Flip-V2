@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ExtractionStatusSummary, ExtractionSummary, ExtractionTransaction, RetentionSettings, RetentionPreview, RetentionRunSummary, ProcessingLogRecord } from './types';
+import type { MonitoringSettings, StorageInfo, ExtractionStatusSummary, ExtractionSummary, ExtractionTransaction, RetentionSettings, RetentionPreview, RetentionRunSummary, ProcessingLogRecord } from './types';
 
 export const tauriBridge = {
   getExtractionSummary: () => invoke<ExtractionStatusSummary>('get_extraction_status_summary'),
@@ -18,6 +18,10 @@ export const tauriBridge = {
     invoke<number>('merge_duplicate_transactions', { transactionId }),
   getRetentionSettings: () => invoke<RetentionSettings>('get_retention_settings'),
   setRetentionSettings: (retentionDays: number) => invoke<RetentionSettings>('set_retention_settings', { retentionDays }),
+  getMonitoringSettings: () => invoke<MonitoringSettings>('get_monitoring_settings'),
+  setMonitoringSettings: (enabled: boolean, intervalSeconds: number) => invoke<MonitoringSettings>('set_monitoring_settings', { enabled, intervalSeconds }),
+  getStorageInfo: () => invoke<StorageInfo>('get_storage_info'),
+  openStorageDirectory: () => invoke<void>('open_storage_directory'),
   previewRetentionCleanup: () => invoke<RetentionPreview>('preview_retention_cleanup'),
   runRetentionCleanup: () => invoke<RetentionRunSummary>('run_retention_cleanup'),
 };

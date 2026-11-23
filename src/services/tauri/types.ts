@@ -19,3 +19,6 @@ export interface RetentionPreview { retentionDays: number; eligibleCount: number
 export interface RetentionRunSummary { deletedTransactions: number; deletedPngFiles: number; failedPngDeletions: number; }
 
 export interface ProcessingLogRecord { id: number; transactionId: number | null; accountEmail: string | null; processType: string; status: string; errorMessage: string | null; createdAt: string; }
+
+export interface MonitoringSettings { enabled: boolean; intervalSeconds: number; }
+export interface StorageInfo { dataDirectory: string; databaseBytes: number; pngBytes: number; pngFiles: number; totalBytes: number; }

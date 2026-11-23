@@ -26,7 +26,7 @@ fn decode_body(data: &str) -> String {
 
 
 fn sanitize_part(part: &Value) -> Value {
-    let mut output = json!({
+    let output = json!({
         "partId": part.get("partId"),
         "mimeType": part.get("mimeType"),
         "filename": part.get("filename"),

@@ -28,7 +28,7 @@ pub fn set_settings(db: &Database, days: u32) -> Result<RetentionSettings, Strin
     if !(1..=365).contains(&days) { return Err("Masa retensi harus 1 sampai 365 hari.".into()); }
     let conn = db.connection.lock().map_err(lock_error)?;
     conn.execute("INSERT INTO app_settings(setting_key,setting_value,updated_at) VALUES('retention_period',?1,datetime('now')) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value,updated_at=datetime('now')", [days.to_string()]).map_err(db_error)?;
-    conn.execute("UPDATE transactions SET retention_until=datetime(first_copied_at, '+' || ?1 || ' days'),updated_at=datetime('now') WHERE first_copied_at IS NOT NULL AND status IN ('Completed','Needs Review')", [days]).map_err(db_error)?;
+    conn.execute("UPDATE transactions SET retention_until=datetime(last_copied_at, '+' || ?1 || ' days'),updated_at=datetime('now') WHERE last_copied_at IS NOT NULL AND status IN ('Completed','Needs Review')", [days]).map_err(db_error)?;
     Ok(RetentionSettings { retention_days: days })
 }
 
@@ -36,15 +36,15 @@ pub fn preview(db: &Database) -> Result<RetentionPreview, String> {
     let conn = db.connection.lock().map_err(lock_error)?;
     let days: u32 = conn.query_row("SELECT COALESCE((SELECT CAST(setting_value AS INTEGER) FROM app_settings WHERE setting_key='retention_period'), ?1)", [DEFAULT_DAYS], |r| r.get(0)).map_err(db_error)?;
     let eligible_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM transactions WHERE first_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days')) <= datetime('now')",
+        "SELECT COUNT(*) FROM transactions WHERE last_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(last_copied_at, '+' || ?1 || ' days')) <= datetime('now')",
         [days], |r| r.get::<_, i64>(0),
     ).map_err(db_error)?;
     let oldest_expired_at: Option<String> = conn.query_row(
-        "SELECT MIN(COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days'))) FROM transactions WHERE first_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days')) <= datetime('now')",
+        "SELECT MIN(COALESCE(retention_until,datetime(last_copied_at, '+' || ?1 || ' days'))) FROM transactions WHERE last_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(last_copied_at, '+' || ?1 || ' days')) <= datetime('now')",
         [days], |r| r.get::<_, Option<String>>(0),
     ).map_err(db_error)?;
     let png_file_count: i64 = conn.query_row(
-        "SELECT COUNT(DISTINCT png_path) FROM transactions WHERE first_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days')) <= datetime('now') AND png_path IS NOT NULL AND png_path <> ''",
+        "SELECT COUNT(DISTINCT png_path) FROM transactions WHERE last_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(last_copied_at, '+' || ?1 || ' days')) <= datetime('now') AND png_path IS NOT NULL AND png_path <> ''",
         [days], |r| r.get::<_, i64>(0),
     ).map_err(db_error)?;
     Ok(RetentionPreview { retention_days: days, eligible_count: eligible_count.max(0) as usize, oldest_expired_at, png_file_count: png_file_count.max(0) as usize })
@@ -54,7 +54,7 @@ pub fn run_cleanup(db: &Database) -> Result<RetentionRunSummary, String> {
     let mut conn = db.connection.lock().map_err(lock_error)?;
     let days: u32 = conn.query_row("SELECT COALESCE((SELECT CAST(setting_value AS INTEGER) FROM app_settings WHERE setting_key='retention_period'), ?1)", [DEFAULT_DAYS], |r| r.get(0)).map_err(db_error)?;
     let tx = conn.transaction().map_err(db_error)?;
-    let mut stmt = tx.prepare("SELECT id,png_path FROM transactions WHERE first_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days')) <= datetime('now')").map_err(db_error)?;
+    let mut stmt = tx.prepare("SELECT id,png_path FROM transactions WHERE last_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(last_copied_at, '+' || ?1 || ' days')) <= datetime('now')").map_err(db_error)?;
     let expired: Vec<(i64, Option<String>)> = stmt.query_map([days], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_error)?.collect::<Result<_,_>>().map_err(db_error)?;
     drop(stmt);
     let ids: Vec<i64> = expired.iter().map(|(id,_)| *id).collect();

@@ -1,23 +1,20 @@
 import { useState } from 'react';
 import './App.css';
-import GmailAccountTest from '../features/gmail/components/GmailAccountTest';
 import EmailHistory from '../features/email-history/components/EmailHistory';
 import Dashboard from '../features/dashboard/pages/Dashboard';
 import Transactions from '../features/transactions/pages/Transactions';
 import CopyTracking from '../features/copy-tracking/pages/CopyTracking';
-import Retention from '../features/retention/pages/Retention';
-import Logs from '../features/logs/pages/Logs';
+import Settings from '../features/settings/pages/Settings';
 
-type AppPage = 'dashboard' | 'transactions' | 'copy-tracking' | 'retention' | 'gmail' | 'history' | 'logs';
+type AppPage = 'dashboard' | 'transactions' | 'copy-tracking' | 'history' | 'settings';
 
 const navigation: { id: AppPage; label: string; icon: string }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: '◫' },
   { id: 'transactions', label: 'Transaksi', icon: '⇄' },
   { id: 'copy-tracking', label: 'Copy Tracking', icon: '◷' },
-  { id: 'retention', label: 'Data Retention', icon: '⌫' },
-  { id: 'gmail', label: 'Akun Gmail', icon: '✉' },
+
   { id: 'history', label: 'Riwayat Email', icon: '▤' },
-  { id: 'logs', label: 'Log Aktivitas', icon: '◷' },
+  { id: 'settings', label: 'Pengaturan', icon: '⚙' },
 ];
 
 function App() {
@@ -79,8 +76,7 @@ function App() {
           {page === 'dashboard' ? <Dashboard onOpenTransactions={() => setPage('transactions')} />
             : page === 'transactions' ? <Transactions />
               : page === 'copy-tracking' ? <CopyTracking />
-              : page === 'retention' ? <Retention />
-              : page === 'gmail' ? <GmailAccountTest />
+              : page === 'settings' ? <Settings />
                 : <EmailHistory />}
         </div>
       </main>
