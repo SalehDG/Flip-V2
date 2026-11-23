@@ -9,6 +9,7 @@ import './Transactions.css';
 const filters = ['Semua', 'Completed', 'Needs Review', 'Duplicate Review', 'Failed', 'Skipped', 'Detected', 'Parsed', 'OCR Processing'];
 const labels: Record<string, string> = { Completed: 'Selesai', 'Needs Review': 'Perlu Ditinjau', 'Duplicate Review': 'Duplikat', Failed: 'Gagal', Skipped: 'Dilewati', Detected: 'Terdeteksi', Parsed: 'Diparsing', 'OCR Processing': 'Proses OCR' };
 function formatAmount(value: number | null) { return value == null ? '—' : new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(value); }
+function formatClipboardAmount(value: number | null) { return value == null ? '' : new Intl.NumberFormat('id-ID', { maximumFractionDigits: 0 }).format(value); }
 function dateLabel(value: string | null) { if (!value) return '—'; const date = normalizeTransactionDate(value); return date ? date.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : value; }
 function dateTimeLabel(value: string | null) { if (!value) return '—'; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }); }
 function inputDate(value: string | null) { if (!value) return ''; if (value.includes('/')) { const [d,m,y] = value.split('/'); return `${y}-${m}-${d}`; } return value.slice(0,10); }
@@ -73,15 +74,24 @@ export default function Transactions() {
   function toggleSelection(id: number) { setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }
   function toggleVisible() { const ids = pageRows.map(r => r.id); const all = ids.length > 0 && ids.every(id => selectedIds.includes(id)); setSelectedIds(prev => all ? prev.filter(id => !ids.includes(id)) : [...new Set([...prev, ...ids])]); }
   async function copyRows(sourceRows: ExtractionTransaction[], actionLabel: string) {
-    const eligible = sourceRows.filter(r => !['Failed', 'Duplicate Review'].includes(r.status));
+    // Prevent re-copying transactions that were already exported to clipboard before.
+    const eligible = sourceRows.filter(r => !['Failed', 'Duplicate Review'].includes(r.status) && !(r.firstCopiedAt || r.lastCopiedAt));
+    const skippedCopiedCount = sourceRows.filter(r => r.firstCopiedAt || r.lastCopiedAt).length;
     const reviewCount = eligible.filter(r => r.status === 'Needs Review').length;
     if (reviewCount && !window.confirm(`Ada ${reviewCount} transaksi yang perlu ditinjau. Tetap salin?`)) return;
-    if (!eligible.length) { setCopyNotice('Tidak ada transaksi yang bisa disalin pada pilihan ini.'); return; }
-    const text = eligible.map(r => [exportDate(r.transactionDate), r.transferNote ?? '', r.recipientName ?? '', '', r.amount ?? '', '', ''].join('\t')).join('\n');
+    if (!eligible.length) {
+      setCopyNotice(skippedCopiedCount ? 'Semua transaksi pada pilihan ini sudah pernah di-copy.' : 'Tidak ada transaksi yang bisa disalin pada pilihan ini.');
+      return;
+    }
+    const text = eligible.map(r => [exportDate(r.transactionDate), r.transferNote ?? '', r.recipientName ?? '', '', formatClipboardAmount(r.amount), '', ''].join('\t')).join('\n');
     try {
       await navigator.clipboard.writeText(text);
-      try { await tauriBridge.markTransactionsCopied(eligible.map(row => row.id)); setCopyNotice(`${eligible.length} transaksi ${actionLabel} berhasil disalin. Tracking tersimpan.`); await load(); }
-      catch (trackingError) { setCopyNotice(`${eligible.length} transaksi disalin, tetapi tracking gagal disimpan: ${String(trackingError)}`); }
+      try {
+        await tauriBridge.markTransactionsCopied(eligible.map(row => row.id));
+        const skippedMessage = skippedCopiedCount ? ` (${skippedCopiedCount} transaksi yang sudah pernah di-copy dilewati)` : '';
+        setCopyNotice(`${eligible.length} transaksi ${actionLabel} berhasil disalin${skippedMessage}. Tracking tersimpan.`);
+        await load();
+      } catch (trackingError) { setCopyNotice(`${eligible.length} transaksi disalin, tetapi tracking gagal disimpan: ${String(trackingError)}`); }
     } catch { setCopyNotice('Clipboard tidak dapat diakses.'); }
   }
   async function copySelected() { await copyRows(rows.filter(r => selectedIds.includes(r.id)), 'terpilih'); }

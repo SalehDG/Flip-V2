@@ -25,7 +25,7 @@
 .transactions-workspace .tx-table tbody tr.needs-review-row{background:#fffaf2}.transactions-workspace .tx-table tbody tr.needs-review-row:hover,.transactions-workspace .tx-table tbody tr.needs-review-row.selected{background:#fff5e6}
 .transactions-workspace .tx-table tbody tr.failed-row{background:#fff5f4}.transactions-workspace .tx-check-col{width:34px;text-align:center;padding-left:12px!important;padding-right:4px!important}
 .transactions-workspace .tx-check-col input{accent-color:#2379dd;width:14px;height:14px;vertical-align:middle;cursor:pointer}
-.transactions-workspace .tx-date-cell{white-space:nowrap;color:#647991}.transactions-workspace .tx-date-cell small{display:block;margin-top:4px;color:#9ba8b8;font-size:9px}
+.transactions-workspace .tx-date-cell{white-space:nowrap;color:#647991;text-align:center}.transactions-workspace .tx-date-cell small{display:block;margin-top:4px;color:#9ba8b8;font-size:9px}
 .transactions-workspace .tx-recipient-cell{max-width:145px;overflow-wrap:anywhere}.transactions-workspace .tx-recipient-cell strong{font-weight:650;color:#253a53}
 .transactions-workspace .tx-amount-cell{white-space:nowrap;font-weight:700;color:#293e58}
 .transactions-workspace .tx-note-cell{min-width:130px;max-width:230px;overflow-wrap:anywhere;line-height:1.45}.transactions-workspace .tx-note-warning{display:block;color:#bb7b1d;font-size:9px;margin-top:3px}
