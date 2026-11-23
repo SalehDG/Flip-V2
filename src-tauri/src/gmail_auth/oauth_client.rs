@@ -47,6 +47,13 @@ impl GoogleOAuthConfig {
     pub fn load_for_app(app: &AppHandle) -> Result<Self, String> {
         let mut candidates: Vec<PathBuf> = Vec::new();
 
+        if let Ok(path) = crate::storage_paths::app_config_dir(app) {
+            candidates.push(path.join("oauth-client.json"));
+        }
+        // Portable package may also place OAuth config beside the executable.
+        if let Some(root) = crate::storage_paths::portable_root() {
+            candidates.push(root.join("oauth-client.json"));
+        }
         if let Ok(path) = app.path().app_config_dir() {
             candidates.push(path.join("oauth-client.json"));
         }
@@ -67,9 +74,7 @@ impl GoogleOAuthConfig {
             }
         }
 
-        let config_dir = app
-            .path()
-            .app_config_dir()
+        let config_dir = crate::storage_paths::app_config_dir(app)
             .map(|path| path.display().to_string())
             .unwrap_or_else(|_| "direktori konfigurasi aplikasi".into());
 

@@ -533,10 +533,7 @@ async fn retrieve_and_store_message(
     let mut parts = Vec::new();
     collect_parts(root, &mut parts);
 
-    let account_dir: PathBuf = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Cannot resolve application data directory: {error}"))?
+    let account_dir: PathBuf = crate::storage_paths::app_data_dir(app)?
         .join("attachments")
         .join(account_id.to_string())
         .join(&message.id);

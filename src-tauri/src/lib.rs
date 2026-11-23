@@ -3,6 +3,7 @@ mod databases;
 mod gmail_auth;
 mod gmail_sync;
 mod services;
+mod storage_paths;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -20,7 +21,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let app_data_dir = app.path().app_data_dir()?;
+            let app_data_dir = storage_paths::app_data_dir(app.handle()).map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
             std::fs::create_dir_all(&app_data_dir)?;
             let db_path = app_data_dir.join("flip-v2.sqlite3");
             let database = databases::Database::new(&db_path)?;

@@ -9,12 +9,12 @@ pub fn set_monitoring_settings(database: State<'_, Database>, enabled: bool, int
 
 #[tauri::command]
 pub fn get_storage_info(app: AppHandle, database: State<'_, Database>) -> Result<StorageInfo, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| format!("Gagal membaca direktori data: {e}"))?;
+    let data_dir = crate::storage_paths::app_data_dir(&app)?;
     settings::get_storage_info(database.inner(), &data_dir)
 }
 
 #[tauri::command]
 pub fn open_storage_directory(app: AppHandle) -> Result<(), String> {
-    let path = app.path().app_data_dir().map_err(|e| format!("Gagal membaca direktori data: {e}"))?;
+    let path = crate::storage_paths::app_data_dir(&app)?;
     tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| format!("Gagal membuka folder penyimpanan: {e}"))
 }

@@ -83,7 +83,7 @@ pub async fn export_gmail_message_diagnostic(
         "snippet": message.get("snippet"),
         "payload": payload
     });
-    let dir: PathBuf = app.path().app_config_dir().map_err(|e| format!("Folder config tidak tersedia: {e}"))?.join("diagnostics");
+    let dir: PathBuf = crate::storage_paths::app_config_dir(&app)?.join("diagnostics");
     fs::create_dir_all(&dir).map_err(|e| format!("Gagal membuat folder diagnostic: {e}"))?;
     let safe_id: String = message_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(60).collect();
     let path = dir.join(format!("gmail-message-{safe_id}.json"));
