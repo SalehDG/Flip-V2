@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { listen } from '@tauri-apps/api/event';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { transactionService } from '../services/transactionService';
@@ -100,7 +101,7 @@ export default function Transactions() {
   const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [savingId, setSavingId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null); const [noteDraft, setNoteDraft] = useState('');
   const [reviewRow, setReviewRow] = useState<ExtractionTransaction | null>(null);
-  const [reviewDraft, setReviewDraft] = useState({ date: '', recipient: '', transactionId: '', amount: '', note: '' });
+  const [reviewDraft, setReviewDraft] = useState({ date: '', recipient: '', transactionId: '', amount: '', note: '' }); const [reviewError, setReviewError] = useState('');
   const [messageOpen, setMessageOpen] = useState(true); const [invoiceOpen, setInvoiceOpen] = useState(true); const [messageBody, setMessageBody] = useState(''); const [messageLoading, setMessageLoading] = useState(false); const [messageError, setMessageError] = useState(''); const [copyNotice, setCopyNotice] = useState('');
   // Load transactions in batches. The old single request capped the page at 250 rows,
   // which caused older statuses to appear as zero even though they existed in SQLite.
@@ -142,7 +143,7 @@ export default function Transactions() {
       if (group) group.push(row); else groups.set(key, [row]);
     }
     return Array.from(groups.values())
-      .filter(group => group.some(row => normalizeStatus(row.status) === 'needs_review' || !(row.firstCopiedAt || row.lastCopiedAt)))
+      .filter(group => group.some(row => !(row.firstCopiedAt || row.lastCopiedAt)))
       .flat();
   }, [baseContextRows, subPage]);
   const counts = useMemo(() => Object.fromEntries(filters.slice(1).map(status => [status, baseContextRows.filter(r => normalizeStatus(r.status) === normalizeStatus(status)).length])), [baseContextRows]);
@@ -173,9 +174,9 @@ export default function Transactions() {
   }
 
   function beginEdit(row: ExtractionTransaction) { setEditingId(row.id); setNoteDraft(row.transferNote ?? ''); }
-  function openReview(row: ExtractionTransaction) { setMessageOpen(true); setInvoiceOpen(true); setReviewRow(row); setReviewDraft({ date: inputDate(row.transactionDate), recipient: row.recipientName ?? '', transactionId: row.flipTransactionId ?? '', amount: row.amount == null ? '' : String(row.amount), note: row.transferNote ?? '' }); }
+  function openReview(row: ExtractionTransaction) { setReviewError(''); setMessageOpen(true); setInvoiceOpen(true); setReviewRow(row); setReviewDraft({ date: inputDate(row.transactionDate), recipient: row.recipientName ?? '', transactionId: row.flipTransactionId ?? '', amount: row.amount == null ? '' : String(row.amount), note: row.transferNote ?? '' }); }
   async function saveNote(id: number) { setSavingId(id); setError(''); try { await transactionService.correctNote(id, noteDraft.trim()); setEditingId(null); await load(); } catch (e) { setError(String(e)); } finally { setSavingId(null); } }
-  async function saveReviewCorrection() { if (!reviewRow) return; const amount = parseReviewAmount(reviewDraft.amount); if (!reviewDraft.date || !reviewDraft.recipient.trim() || !reviewDraft.transactionId.trim() || !Number.isSafeInteger(amount) || amount <= 0) { setError('Tanggal, nama, Transaction ID, dan nominal wajib valid.'); return; } setSavingId(reviewRow.id); setError(''); try { const status = await transactionService.saveCorrection({ transactionId: reviewRow.id, transactionDate: reviewDraft.date, recipientName: reviewDraft.recipient.trim(), flipTransactionId: reviewDraft.transactionId.trim(), amount, transferNote: reviewDraft.note.trim() }); setReviewRow(null); await load(); setCopyNotice(status === 'Completed' ? 'Koreksi tersimpan. Transaksi berstatus Completed.' : 'Koreksi tersimpan, tetapi Transaction ID terdeteksi duplikat.'); } catch (e) { setError(String(e)); } finally { setSavingId(null); } }
+  async function saveReviewCorrection() { if (!reviewRow) return; const amount = parseReviewAmount(reviewDraft.amount); if (!reviewDraft.date || !reviewDraft.recipient.trim() || !reviewDraft.transactionId.trim() || !Number.isSafeInteger(amount) || amount <= 0) { setReviewError('Tanggal, nama, Transaction ID, dan nominal wajib valid. Periksa kembali data di panel ini.'); return; } setSavingId(reviewRow.id); setReviewError(''); setError(''); try { const status = await transactionService.saveCorrection({ transactionId: reviewRow.id, transactionDate: reviewDraft.date, recipientName: reviewDraft.recipient.trim(), flipTransactionId: reviewDraft.transactionId.trim(), amount, transferNote: reviewDraft.note.trim() }); setReviewRow(null); await load(); setCopyNotice(status === 'Completed' ? 'Koreksi tersimpan. Transaksi berstatus Completed.' : 'Koreksi tersimpan, tetapi Transaction ID terdeteksi duplikat.'); } catch (e) { setReviewError(String(e)); } finally { setSavingId(null); } }
   function toggleSelection(id: number) { setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }
   function toggleVisible() { const ids = pageRows.map(r => r.id); const all = ids.length > 0 && ids.every(id => selectedIds.includes(id)); setSelectedIds(prev => all ? prev.filter(id => !ids.includes(id)) : [...new Set([...prev, ...ids])]); }
   async function copyRows(sourceRows: ExtractionTransaction[], actionLabel: string) {
@@ -204,12 +205,12 @@ export default function Transactions() {
     <header className="tx-page-header"><div><h2>Transaksi</h2><p>Kelola dan proses hasil ekstraksi email transaksi Flip.</p></div><div className="tx-header-actions"><button className="subtle tx-refresh" onClick={() => void load()} disabled={loading}><span>↻</span>{loading ? 'Memuat…' : 'Refresh'}</button></div></header>
     {error && <div className="error-banner" role="alert">{error}</div>}
     <div className="tx-status-tabs" role="tablist" aria-label="Filter transaksi">
-      <button role="tab" aria-selected={subPage === 'latest'} className={`tx-latest-tab ${subPage === 'latest' ? 'active' : ''}`} onClick={() => { setSubPage('latest'); setFilter('Semua'); }}><span className="tx-tab-icon latest-icon">✦</span>Terbaru<span className="tx-tab-count new-count">{baseContextRows.filter(r => normalizeStatus(r.status) === 'needs_review' || !(r.firstCopiedAt || r.lastCopiedAt)).length.toLocaleString('id-ID')}</span></button>
+      <button role="tab" aria-selected={subPage === 'latest'} className={`tx-latest-tab ${subPage === 'latest' ? 'active' : ''}`} onClick={() => { setSubPage('latest'); setFilter('Semua'); }}><span className="tx-tab-icon latest-icon">✦</span>Terbaru<span className="tx-tab-count new-count">{baseContextRows.filter(r => !(r.firstCopiedAt || r.lastCopiedAt)).length.toLocaleString('id-ID')}</span></button>
       {filters.slice(0,5).map(status => <button key={status} role="tab" aria-selected={subPage === 'all' && filter === status} className={subPage === 'all' && filter === status ? 'active' : ''} onClick={() => { setSubPage('all'); setFilter(status); }}><span className={`tx-tab-icon ${statusClass(status)}`}>{status === 'Semua' ? '▱' : status === 'Completed' ? '✓' : status === 'Needs Review' ? '△' : status === 'Duplicate Review' ? '▢' : '⊗'}</span>{labels[status] ?? status}<span className="tx-tab-count">{status === 'Semua' ? baseContextRows.length.toLocaleString('id-ID') : (counts[status] ?? 0).toLocaleString('id-ID')}</span></button>)}
     </div>
     <div className="tx-toolbar">
       <div className="tx-date-filter"><span className="tx-filter-caption">Rentang tanggal</span><select className="tx-date-select" value={dateFilter} onChange={e => setDateFilter(e.target.value)} aria-label="Filter rentang tanggal"><option value="all">Semua tanggal</option><option value="today">Hari ini</option><option value="yesterday">Kemarin</option><option value="week">Minggu ini</option><option value="custom">Custom</option></select></div>
-      {dateFilter === 'custom' && <div className="tx-custom-range"><label>Dari<input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} /></label><label>Sampai<input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} /></label></div>}
+      {dateFilter === 'custom' && <div className="tx-custom-range"><label>Dari<input type="date" value={customStart} onChange={e => { const nextStart = e.target.value; setCustomStart(nextStart); if (customEnd && nextStart && customEnd < nextStart) setCustomEnd(nextStart); }} /></label><label>Sampai<input type="date" value={customEnd} min={customStart || undefined} onChange={e => setCustomEnd(e.target.value)} /></label></div>}
       <div className="tx-account-dropdown"><span className="tx-filter-caption">Akun Gmail</span><button type="button" className="tx-account-trigger" onClick={() => setAccountMenuOpen(open => !open)} aria-expanded={accountMenuOpen}><span className="tx-account-avatar">{accountFilter === 'all' ? '✉' : accountInitials(accountFilter)}</span><span className="tx-account-trigger-label">{accountFilter === 'all' ? 'Semua akun' : accountFilter}</span><span className="tx-dropdown-chevron">⌄</span></button>
         {accountMenuOpen && <div className="tx-account-menu"><button type="button" className={accountFilter === 'all' ? 'selected' : ''} onClick={() => { setAccountFilter('all'); setAccountMenuOpen(false); }}><span className="tx-account-avatar all-avatar">✉</span><span className="tx-account-option-text"><strong>Semua akun</strong><small>Gabungan transaksi</small></span>{accountFilter === 'all' && <span className="account-check">✓</span>}</button>{accounts.map(email => <button type="button" key={email} className={accountFilter === email ? 'selected' : ''} onClick={() => { setAccountFilter(email); setAccountMenuOpen(false); }}><span className="tx-account-avatar">{accountInitials(email)}</span><span className="tx-account-option-text"><strong>{email}</strong><small>Akun Gmail terhubung</small></span>{accountFilter === email && <span className="account-check">✓</span>}</button>)}</div>}
       </div>
@@ -223,10 +224,10 @@ export default function Transactions() {
     {detailOpen && !reviewRow && <aside className={`tx-detail-panel ${selectedRow ? '' : 'empty'}`}><div className="tx-detail-header"><div><h3>Detail Transaksi</h3><p>{selectedRow ? 'Informasi transaksi terpilih' : 'Pilih transaksi untuk melihat detail'}</p></div>{selectedRow && <button className="tx-close-detail" onClick={() => setDetailOpen(false)} aria-label="Tutup detail">×</button>}</div>
     {selectedRow ? <><div className="tx-detail-status-line"><span className={`status-chip ${statusClass(selectedRow.status)}`}>{labels[selectedRow.status] ?? selectedRow.status}</span><span>{dateTimeLabel(selectedRow.transactionTimestamp)}</span></div><div className="tx-detail-fields"><div><label>Penerima</label><strong>{selectedRow.recipientName || 'Belum terbaca'}</strong></div><div><label>Nominal</label><strong className="tx-detail-amount">{formatAmount(selectedRow.amount)}</strong></div><div><label>Catatan Transfer</label><p>{selectedRow.transferNote || 'Belum ada catatan'}</p></div><div><label>Akun Gmail</label><p>{selectedRow.accountEmail || '—'}</p></div><div><label>Flip Transaction ID</label><p className="tx-detail-id">{selectedRow.flipTransactionId || 'Tidak tersedia'}</p></div><div><label>Alasan / Error</label><p className="tx-detail-reason">{selectedRow.reviewReason || selectedRow.lastError || 'Tidak ada catatan masalah.'}</p></div></div><div className="tx-detail-invoice"><div className="tx-detail-section-title"><strong>Lampiran Invoice</strong><span>{selectedRow.pngPath ? 'PNG' : 'Tidak tersedia'}</span></div>{selectedRow.pngPath ? <div className="tx-invoice-preview"><img src={convertFileSrc(selectedRow.pngPath)} alt="Lampiran invoice transaksi"/></div> : <div className="tx-invoice-empty">Lampiran PNG tidak tersedia untuk transaksi ini.</div>}</div><div className="tx-detail-actions">{selectedRow.status === 'Needs Review' && <button className="primary" onClick={() => openReview(selectedRow)}>Review & Edit</button>}<button className="subtle" onClick={() => openReview(selectedRow)}>Lihat Email Sumber</button><button className="subtle" onClick={() => openReview(selectedRow)}>Edit Transaksi</button>{['Failed','Needs Review','Duplicate Review'].includes(selectedRow.status) && <button className="subtle" onClick={() => void retry(selectedRow.id)} disabled={savingId===selectedRow.id}>{savingId===selectedRow.id ? 'Mencoba…' : 'Coba Ulang'}</button>}</div></> : <div className="tx-detail-empty-state"><span>⌁</span><strong>Belum ada transaksi dipilih</strong><p>Klik salah satu baris untuk melihat informasi lengkap dan lampiran.</p></div>}</aside>} </div>
     {selectedIds.length>0 && <div className="tx-bulk-bar"><strong>{selectedIds.length} transaksi dipilih</strong><button className="subtle" onClick={() => setSelectedIds([])}>Batal Pilih</button><button className="primary" onClick={() => void copySelected()}>▣ Copy yang dipilih</button></div>}{copyNotice && <div className="tx-copy-notice" role="status">{copyNotice}<button onClick={() => setCopyNotice('')}>×</button></div>}<p className="tx-footnote">{subPage === 'latest' ? 'Terbaru menampilkan transaksi yang belum pernah di-copy.' : 'Data transaksi lokal · Catatan OCR dapat dikoreksi · Transaksi bermasalah dapat ditinjau ulang.'}</p>
-      {reviewRow && (
+      {reviewRow && createPortal(
         <>
         <style>{`
-          .review-overlay{position:fixed;inset:0;z-index:99999;background:rgba(12,24,44,.48);backdrop-filter:blur(5px);display:flex;align-items:center;justify-content:center;padding:24px}
+          .review-overlay{position:fixed;inset:0;z-index:2147483000;background:rgba(12,24,44,.48);backdrop-filter:blur(5px);display:flex;align-items:center;justify-content:center;padding:24px}
           .review-modal{width:min(1180px,96vw);height:min(820px,92vh);background:#f7faff;border:1px solid #dce7f3;border-radius:20px;box-shadow:0 24px 80px rgba(10,35,70,.25);display:flex;flex-direction:column;overflow:hidden;color:#172b45}
           .review-header{display:flex;justify-content:space-between;align-items:center;padding:20px 24px;border-bottom:1px solid #e0eaf4;background:white}
           .review-header h3{margin:4px 0;font-size:22px}.review-header p{margin:0;color:#718198;font-size:13px}.review-kicker{font-size:10px;font-weight:800;letter-spacing:1.5px;color:#2f78d0}
@@ -253,6 +254,7 @@ export default function Transactions() {
           .review-form label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:700;color:#516780}
           .review-form input,.review-form textarea{font:inherit;font-size:14px;font-weight:500;color:#172b45;background:#fbfdff;border:1px solid #dce6f0;border-radius:9px;padding:10px 11px;outline:none;width:100%;box-sizing:border-box}
           .review-form input:focus,.review-form textarea:focus{border-color:#6ba8ec;box-shadow:0 0 0 3px rgba(75,145,220,.12)}.review-form textarea{resize:vertical}
+          .review-validation-error{font-size:12px;line-height:1.5;color:#a93630;background:#fff0ef;border:1px solid #f1d1cd;padding:10px;border-radius:10px}
           .review-save-notice{font-size:12px;line-height:1.5;color:#76591d;background:#fff8e6;border:1px solid #f1dfae;padding:10px;border-radius:10px}
           .review-save-disabled{opacity:.55;cursor:not-allowed;justify-content:center;width:100%}
           .invoice-panel{display:flex;flex-direction:column;min-width:0;background:white;border:1px solid #e0e9f3;border-radius:15px;overflow:hidden}
@@ -275,6 +277,7 @@ export default function Transactions() {
                 <label>Flip Transaction ID<input value={reviewDraft.transactionId} onChange={e => setReviewDraft(d => ({ ...d, transactionId: e.target.value }))} placeholder="Transaction ID"/></label>
                 <label>Nominal (Rp)<input inputMode="numeric" value={formatReviewAmount(reviewDraft.amount)} onChange={e => setReviewDraft(d => ({ ...d, amount: e.target.value.replace(/[^0-9]/g, '') }))} placeholder="Nominal transfer"/></label>
                 <label>Catatan transfer / Uraian<textarea rows={4} value={reviewDraft.note} onChange={e => setReviewDraft(d => ({ ...d, note: e.target.value }))} placeholder="Uraian transfer"/></label>
+                {reviewError && <div className="review-validation-error" role="alert">{reviewError}</div>}
                 <div className="review-save-notice">Semua perubahan akan dicatat ke riwayat koreksi. Transaction ID duplikat tetap ditandai untuk review.</div>
                 <button type="button" className="primary" disabled={savingId === reviewRow.id} onClick={() => void saveReviewCorrection()}>{savingId === reviewRow.id ? 'Menyimpan…' : 'Simpan Koreksi'}</button>
               </form>
@@ -308,7 +311,7 @@ export default function Transactions() {
             </div>
           </div>
         </div>
-        </>
+        </>, document.body
       )}
     </section>
   ;

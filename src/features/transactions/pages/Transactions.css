@@ -260,3 +260,8 @@
 .transactions-workspace .tx-bulk-bar,
 .transactions-workspace .tx-copy-notice,
 .transactions-workspace .tx-footnote{position:relative;z-index:1;}
+/* Keep filter dropdowns above nearby controls and calendar popovers. */
+.transactions-workspace .tx-toolbar{position:relative;z-index:20;overflow:visible}
+.transactions-workspace .tx-account-dropdown{position:relative;z-index:30}
+.transactions-workspace .tx-account-menu{z-index:1000;max-height:320px;overflow-y:auto}
+.transactions-workspace .tx-custom-range{position:relative;z-index:5}
