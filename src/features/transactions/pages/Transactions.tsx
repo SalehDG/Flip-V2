@@ -95,7 +95,7 @@ function dateMatches(value: string | null, preset: string, customStart: string, 
 
 export default function Transactions() {
   const [rows, setRows] = useState<ExtractionTransaction[]>([]);
-  const [filter, setFilter] = useState('Semua'); const [dateFilter, setDateFilter] = useState('all'); const [customStart, setCustomStart] = useState(''); const [customEnd, setCustomEnd] = useState(''); const [accountFilter, setAccountFilter] = useState('all'); const [accountMenuOpen, setAccountMenuOpen] = useState(false); const [subPage, setSubPage] = useState<'all' | 'latest'>('latest'); const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('Semua'); const [dateFilter, setDateFilter] = useState('all'); const [dateMenuOpen, setDateMenuOpen] = useState(false); const [customStart, setCustomStart] = useState(''); const [customEnd, setCustomEnd] = useState(''); const [accountFilter, setAccountFilter] = useState('all'); const [accountMenuOpen, setAccountMenuOpen] = useState(false); const [subPage, setSubPage] = useState<'all' | 'latest'>('latest'); const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<number | null>(null); const [selectedIds, setSelectedIds] = useState<number[]>([]); const [detailOpen, setDetailOpen] = useState(false);
   const [page, setPage] = useState(1); const pageSize = 8;
   const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [savingId, setSavingId] = useState<number | null>(null);
@@ -237,7 +237,7 @@ export default function Transactions() {
       {filters.slice(0,5).map(status => <button key={status} role="tab" aria-selected={subPage === 'all' && filter === status} className={subPage === 'all' && filter === status ? 'active' : ''} onClick={() => { setSubPage('all'); setFilter(status); }}><span className={`tx-tab-icon ${statusClass(status)}`}>{status === 'Semua' ? '▱' : status === 'Completed' ? '✓' : status === 'Needs Review' ? '△' : status === 'Duplicate Review' ? '▢' : '⊗'}</span>{labels[status] ?? status}<span className="tx-tab-count">{status === 'Semua' ? baseContextRows.length.toLocaleString('id-ID') : (counts[status] ?? 0).toLocaleString('id-ID')}</span></button>)}
     </div>
     <div className="tx-toolbar">
-      <div className="tx-date-filter"><span className="tx-filter-caption">Rentang tanggal</span><select className="tx-date-select" value={dateFilter} onChange={e => setDateFilter(e.target.value)} aria-label="Filter rentang tanggal"><option value="all">Semua tanggal</option><option value="today">Hari ini</option><option value="yesterday">Kemarin</option><option value="week">Minggu ini</option><option value="custom">Custom</option></select></div>
+      <div className="tx-date-filter tx-date-dropdown"><span className="tx-filter-caption">Rentang tanggal</span><button type="button" className="tx-date-trigger" onClick={() => setDateMenuOpen(open => !open)} aria-expanded={dateMenuOpen}><span>{({all:'Semua tanggal',today:'Hari ini',yesterday:'Kemarin',week:'Minggu ini',custom:'Custom'} as Record<string,string>)[dateFilter]}</span><span className="tx-dropdown-chevron">⌄</span></button>{dateMenuOpen && <div className="tx-date-menu">{([{value:'all',label:'Semua tanggal'},{value:'today',label:'Hari ini'},{value:'yesterday',label:'Kemarin'},{value:'week',label:'Minggu ini'},{value:'custom',label:'Custom'}]).map(option => <button type="button" key={option.value} className={dateFilter === option.value ? 'selected' : ''} onClick={() => {setDateFilter(option.value);setDateMenuOpen(false);}}>{option.label}{dateFilter === option.value && <span className="account-check">✓</span>}</button>)}</div>}</div>
       {dateFilter === 'custom' && <div className="tx-custom-range"><label>Dari<input type="date" value={customStart} onChange={e => { const nextStart = e.target.value; setCustomStart(nextStart); if (customEnd && nextStart && customEnd < nextStart) setCustomEnd(nextStart); }} /></label><label>Sampai<input type="date" value={customEnd} min={customStart || undefined} onChange={e => setCustomEnd(e.target.value)} /></label></div>}
       <div className="tx-account-dropdown"><span className="tx-filter-caption">Akun Gmail</span><button type="button" className="tx-account-trigger" onClick={() => setAccountMenuOpen(open => !open)} aria-expanded={accountMenuOpen}><span className="tx-account-avatar">{accountFilter === 'all' ? '✉' : accountInitials(accountFilter)}</span><span className="tx-account-trigger-label">{accountFilter === 'all' ? 'Semua akun' : accountFilter}</span><span className="tx-dropdown-chevron">⌄</span></button>
         {accountMenuOpen && <div className="tx-account-menu"><button type="button" className={accountFilter === 'all' ? 'selected' : ''} onClick={() => { setAccountFilter('all'); setAccountMenuOpen(false); }}><span className="tx-account-avatar all-avatar">✉</span><span className="tx-account-option-text"><strong>Semua akun</strong><small>Gabungan transaksi</small></span>{accountFilter === 'all' && <span className="account-check">✓</span>}</button>{accounts.map(email => <button type="button" key={email} className={accountFilter === email ? 'selected' : ''} onClick={() => { setAccountFilter(email); setAccountMenuOpen(false); }}><span className="tx-account-avatar">{accountInitials(email)}</span><span className="tx-account-option-text"><strong>{email}</strong><small>Akun Gmail terhubung</small></span>{accountFilter === email && <span className="account-check">✓</span>}</button>)}</div>}
@@ -259,23 +259,23 @@ export default function Transactions() {
           .review-modal{width:min(1180px,96vw);height:min(820px,92vh);background:#f7faff;border:1px solid #dce7f3;border-radius:20px;box-shadow:0 24px 80px rgba(10,35,70,.25);display:flex;flex-direction:column;overflow:hidden;color:#172b45}
           .review-header{display:flex;justify-content:space-between;align-items:center;padding:20px 24px;border-bottom:1px solid #e0eaf4;background:white}
           .review-header h3{margin:4px 0;font-size:22px}.review-header p{margin:0;color:#718198;font-size:13px}.review-kicker{font-size:10px;font-weight:800;letter-spacing:1.5px;color:#2f78d0}
-          .review-close{width:38px;height:38px;border:1px solid #dbe5ef;border-radius:11px;background:#f7faff;font-size:25px;color:#50657e;cursor:pointer}
+          .review-close{width:38px;height:38px;border:1px solid #dc3545;border-radius:11px;background:#dc3545;font-size:25px;color:#fff;cursor:pointer;display:grid;place-items:center;transition:background .15s,border-color .15s,transform .15s}.review-close:hover{background:#bb2d3b;border-color:#bb2d3b;transform:scale(1.04)}.review-close:active{transform:scale(.97)}
           .review-content{display:grid;grid-template-columns:minmax(330px,430px) minmax(0,1fr);gap:18px;padding:18px;flex:1;min-height:0}
-          .review-source-column{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}
+          .review-source-column{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0;height:100%;max-height:100%;flex:1 1 auto;overflow-y:auto!important;overflow-x:hidden!important;scrollbar-gutter:stable;overscroll-behavior:contain}
           .source-panel{background:white;border:1px solid #e0e9f3;border-radius:15px;overflow:hidden;display:flex;flex-direction:column;min-width:0}
           .source-panel.message-panel{flex:0 0 auto;min-height:0}
-          .source-panel.invoice-panel{flex:1 1 auto;min-height:0}
-          .source-panel.message-panel .source-panel-content{max-height:min(42vh,360px);overflow:auto}
+          .source-panel.invoice-panel{flex:0 0 auto;min-height:0}
+          .source-panel.message-panel .source-panel-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
           .source-panel.invoice-panel.is-collapsed{flex:0 0 auto;min-height:auto;height:auto}
-          .source-panel.invoice-panel.is-expanded{flex:1 1 0;min-height:180px;max-height:100%}
+          .source-panel.invoice-panel.is-expanded{flex:0 0 420px;min-height:360px;max-height:none}
           .source-panel-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 15px;border:0;background:white;color:#23374e;text-align:left;cursor:pointer}
           .source-panel-toggle strong{font-size:13px}
           .source-panel-toggle span{font-size:11px;color:#8190a4}
           .source-panel-content{padding:14px;border-top:1px solid #e8eef5}
-          .message-meta{display:grid;gap:8px;font-size:12px;color:#64778e}
+          .message-meta{display:grid;gap:8px;font-size:12px;color:#64778e}.message-meta-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:5px;background:#eaf4ff;border:1px solid #d5e9fb;border-radius:8px;padding:7px 9px}.message-meta-row span{color:#507294}.message-meta-row strong{color:#165fae;overflow-wrap:anywhere}
           .message-meta strong{color:#354a63;overflow-wrap:anywhere}
           .message-unavailable{font-size:12px;line-height:1.55;color:#7c8da2;background:#f5f8fc;border:1px dashed #d6e2ef;border-radius:10px;padding:12px;margin-top:12px}
-          .message-body{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6;color:#344b65;background:#f8fbff;border:1px solid #e1eaf4;border-radius:10px;padding:12px;margin-top:12px;max-height:360px;overflow:auto}
+          .message-body{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6;color:#344b65;background:#f8fbff;border:1px solid #e1eaf4;border-radius:10px;padding:12px;margin-top:12px;max-height:none;overflow:visible}
           .message-loading,.message-error{font-size:12px;line-height:1.55;padding:12px;margin-top:12px;border-radius:10px}
           .message-loading{color:#718198;background:#f5f8fc;border:1px dashed #d6e2ef}
           .message-error{color:#9a4e43;background:#fff1ef;border:1px solid #f2d4ce;overflow-wrap:anywhere}
@@ -298,7 +298,7 @@ export default function Transactions() {
           .invoice-canvas{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;background:#edf3f9;display:flex;align-items:flex-start;justify-content:center;padding:16px}
           .invoice-canvas img{max-width:100%;height:auto;object-fit:contain;box-shadow:0 5px 20px rgba(24,45,70,.14);background:white;border-radius:5px}
           .invoice-empty{margin:auto;text-align:center;color:#8291a5}.invoice-empty span{font-size:40px}.invoice-empty strong{display:block;color:#536984;margin:8px}.invoice-empty p{font-size:12px}
-          @media(max-width:760px){.review-overlay{padding:8px}.review-modal{height:96vh;width:100%;border-radius:14px}.review-header{padding:14px}.review-content{grid-template-columns:1fr;grid-template-rows:auto auto;overflow:auto;padding:10px;gap:10px}.review-form{overflow:visible}.review-source-column{min-height:0}.source-panel.invoice-panel.is-expanded{min-height:320px}.source-panel.invoice-panel.is-collapsed{min-height:0}.invoice-canvas img{max-height:none}}
+          @media(max-width:760px){.review-overlay{padding:8px}.review-modal{height:96vh;width:100%;border-radius:14px}.review-header{padding:14px}.review-content{grid-template-columns:1fr;grid-template-rows:auto auto;overflow:auto;padding:10px;gap:10px}.review-form{overflow:visible}.review-source-column{height:auto;max-height:none;min-height:0;overflow:visible!important}.source-panel.message-panel.is-expanded,.source-panel.invoice-panel.is-expanded{flex:0 0 auto;min-height:320px}.source-panel.invoice-panel.is-collapsed{min-height:0}.invoice-canvas img{max-height:none}}
         `}</style>
         <div className="review-overlay" role="dialog" aria-modal="true" aria-label="Review transaksi">
           <div className="review-modal">
@@ -318,14 +318,14 @@ export default function Transactions() {
                 <button type="button" className="primary" disabled={savingId === reviewRow.id} onClick={openReviewPreview}>{savingId === reviewRow.id ? 'Menyimpan…' : 'Simpan & Periksa'}</button>
               </form>
               <div className="review-source-column">
-                <section className="source-panel message-panel">
+                <section className={`source-panel message-panel ${messageOpen ? 'is-expanded' : 'is-collapsed'}`}>
                   <button className="source-panel-toggle" type="button" onClick={() => setMessageOpen(open => !open)} aria-expanded={messageOpen}>
                     <strong>Pesan</strong><span>{messageOpen ? 'Tutup ▲' : 'Buka ▼'}</span>
                   </button>
                   {messageOpen && <div className="source-panel-content">
                     <div className="message-meta">
-                      <div>Akun Gmail<strong>{reviewRow.accountEmail || '—'}</strong></div>
-                      <div>Gmail Message ID<strong>{reviewRow.gmailMessageId || '—'}</strong></div>
+                      <div className="message-meta-row"><span>Akun Gmail:</span><strong>{reviewRow.accountEmail || '—'}</strong></div>
+                      <div className="message-meta-row"><span>Gmail Message ID:</span><strong>{reviewRow.gmailMessageId || '—'}</strong></div>
                     </div>
                     {messageLoading && <div className="message-loading">Memuat isi pesan email…</div>}
                     {!messageLoading && messageError && <div className="message-error">Gagal mengambil pesan: {messageError}</div>}

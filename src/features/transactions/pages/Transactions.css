@@ -280,7 +280,32 @@
 }
 
 .invoice-zoomable{cursor:zoom-in;max-width:100%;height:auto;}
-.invoice-zoom-overlay{position:fixed;inset:0;z-index:10000;background:rgba(8,20,36,.88);display:flex;align-items:center;justify-content:center;padding:30px;cursor:zoom-out;}
+.invoice-zoom-overlay{position:fixed;inset:0;z-index:2147483200;background:rgba(8,20,36,.88);display:flex;align-items:center;justify-content:center;padding:30px;cursor:zoom-out;}
 .invoice-zoom-overlay img{max-width:96vw;max-height:92vh;width:auto;height:auto;object-fit:contain;background:#fff;border-radius:8px;box-shadow:0 12px 45px rgba(0,0,0,.35);cursor:default;}
 .invoice-zoom-close{position:absolute;top:18px;right:20px;width:42px;height:42px;border:1px solid rgba(255,255,255,.4);border-radius:12px;background:rgba(255,255,255,.12);color:#fff;font-size:30px;line-height:1;cursor:pointer;}
 @media(max-width:760px){.invoice-zoom-overlay{padding:12px}.invoice-zoom-overlay img{max-width:98vw;max-height:90vh}}
+
+/* Manual review source panels: each panel owns its scroll, no nested body scrollbar. */
+.transactions-workspace .tx-date-dropdown{position:relative;z-index:35}
+.transactions-workspace .tx-date-trigger{height:38px;min-width:155px;width:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid #d3e4f7;border-radius:11px;background:#fff;padding:0 11px;color:#50657e;font-size:11px;cursor:pointer;box-shadow:0 2px 6px #2b75c808;transition:border-color .15s,box-shadow .15s,background .15s}
+.transactions-workspace .tx-date-trigger:hover,.transactions-workspace .tx-date-trigger[aria-expanded=true]{border-color:#a9cff5;background:#fbfdff}
+.transactions-workspace .tx-date-trigger:focus-visible{border-color:#75b3f0;box-shadow:0 0 0 3px #2786ef18;outline:none}
+.transactions-workspace .tx-date-menu{position:absolute;z-index:1000;top:calc(100% + 6px);left:0;right:0;background:#fff;border:1px solid #dce9f8;border-radius:12px;padding:5px;box-shadow:0 12px 28px #193e681c}
+.transactions-workspace .tx-date-menu button{width:100%;display:flex;align-items:center;justify-content:space-between;padding:9px 10px;border:0;border-radius:8px;background:transparent;text-align:left;color:#52667f;font-size:11px;cursor:pointer}
+.transactions-workspace .tx-date-menu button:hover,.transactions-workspace .tx-date-menu button.selected{background:linear-gradient(135deg,#eff7ff,#e1f0ff);color:#1768c5}
+@media(max-width:600px){.transactions-workspace .tx-date-dropdown{width:100%}.transactions-workspace .tx-date-trigger{width:100%}}
+
+/* Manual Review: collapsed panels shrink; source column retains its own stack scrollbar. */
+.review-content{min-height:0;overflow:hidden}
+.review-source-column{height:100%;min-height:0;overflow-y:auto!important;overflow-x:hidden!important;scrollbar-gutter:stable;overscroll-behavior:contain}
+.source-panel.message-panel.is-collapsed{flex:0 0 auto!important;height:auto!important;min-height:0!important;max-height:none!important}
+.source-panel.message-panel.is-expanded{flex:1 1 360px!important;min-height:180px!important;max-height:none!important}
+.source-panel.invoice-panel.is-collapsed{flex:0 0 auto!important;height:auto!important;min-height:0!important;max-height:none!important}
+.source-panel.invoice-panel.is-expanded{flex:1 1 360px!important;min-height:180px!important;max-height:none!important}
+.source-panel.message-panel.is-expanded .source-panel-content{min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.source-panel.invoice-panel.is-expanded .invoice-canvas{min-height:0;overflow-y:auto;overscroll-behavior:contain}
+@media(max-width:760px){
+  .review-content{overflow:auto}
+  .review-source-column{height:auto;max-height:65vh;overflow-y:auto!important}
+  .source-panel.message-panel.is-expanded,.source-panel.invoice-panel.is-expanded{flex:0 0 auto!important;min-height:280px!important}
+}
