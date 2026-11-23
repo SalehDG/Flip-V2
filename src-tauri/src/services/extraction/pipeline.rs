@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{databases::Database, services::ocr::{run_tesseract, OcrExtractionStatus, TesseractOptions}};
 use super::email_parser::parse_flip_email;
+use super::merge::auto_merge_complementary;
 
 
 const MAX_AUTOMATIC_ATTEMPTS: i64 = 3;
@@ -351,7 +352,7 @@ pub fn list_extraction_transactions(
                 t.png_path, t.attempt_count, t.last_attempt_at, t.created_at, t.updated_at,
                 t.first_copied_at, t.last_copied_at
          FROM transactions t JOIN gmail_accounts a ON a.id=t.gmail_account_id
-         WHERE (?1 IS NULL OR t.status=?1)
+         WHERE t.merged_into_id IS NULL AND (?1 IS NULL OR t.status=?1)
          ORDER BY t.created_at DESC, t.id DESC LIMIT ?2 OFFSET ?3",
     ).map_err(db_err)?;
     let rows = statement.query_map(params![status_filter, i64::from(limit), offset], |row| Ok(ExtractionTransactionRecord {
@@ -369,7 +370,7 @@ pub fn list_extraction_transactions(
 pub fn get_extraction_status_summary(database: &Database) -> Result<ExtractionStatusSummary, String> {
     let connection = database.connection.lock().map_err(lock_err)?;
     let mut statement = connection.prepare(
-        "SELECT status, COUNT(*) FROM transactions GROUP BY status",
+        "SELECT status, COUNT(*) FROM transactions WHERE merged_into_id IS NULL GROUP BY status",
     ).map_err(db_err)?;
     let mut summary = ExtractionStatusSummary { detected:0, parsed:0, ocr_processing:0, completed:0, needs_review:0, duplicate_review:0, failed:0 };
     let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))).map_err(db_err)?;
@@ -410,6 +411,14 @@ fn process_one(
         }
     };
     let body = decoded_email_body(&payload);
+    if is_flip_transfer_confirmation_email(&body) {
+        // ST confirmation emails only acknowledge a transfer request and instruct
+        // the sender to fund Flip. They are not ledger transactions.
+        let connection = database.connection.lock().map_err(lock_err)?;
+        connection.execute("DELETE FROM processing_logs WHERE transaction_id=?1", params![item.id]).map_err(db_err)?;
+        connection.execute("DELETE FROM transactions WHERE id=?1", params![item.id]).map_err(db_err)?;
+        return Ok(Some("Skipped".to_string()));
+    }
     if is_multi_destination_instruction_email(&body) {
         const REASON: &str = "Email instruksi transfer ke banyak tujuan, bukan bukti transaksi transfer selesai. Dilewati dari ekstraksi transaksi.";
         let connection = database.connection.lock().map_err(lock_err)?;
@@ -427,6 +436,7 @@ fn process_one(
     }
     let parsed = parse_flip_email(item.subject.as_deref(), &body);
     save_parsed_fields(database, item.id, &parsed)?;
+    create_email_fee_component_rows(database, &item, &parsed)?;
     if !parsed.review_reasons.is_empty() {
         let reason = parsed.review_reasons.join(" ");
         let status = finish_review(database, &item, parsed.transaction_id.as_deref(), parsed.transaction_date.as_deref(), parsed.recipient_name.as_deref(), parsed.amount, None, Some(&reason), None, app)?;
@@ -434,8 +444,16 @@ fn process_one(
     }
 
     let attachments = local_png_attachments(database, item.account_id, &item.message_id)?;
+    if attachments.is_empty() {
+        if let Some(note) = parsed.email_transfer_note.as_deref().filter(|note| !note.trim().is_empty()) {
+            return finalize_email_only(database, &item, &parsed, note, app);
+        }
+        let reason = "Lampiran gambar invoice tidak ditemukan dan Catatan Transfer tidak tersedia di body email.";
+        let status = finish_review(database, &item, parsed.transaction_id.as_deref(), parsed.transaction_date.as_deref(), parsed.recipient_name.as_deref(), parsed.amount, None, Some(reason), None, app)?;
+        return Ok(Some(status));
+    }
     if attachments.len() != 1 {
-        let reason = if attachments.is_empty() { "Lampiran gambar invoice (PNG/JPEG) tidak ditemukan." } else { "Lebih dari satu attachment gambar invoice ditemukan; perlu pemeriksaan manual." };
+        let reason = "Lebih dari satu attachment gambar invoice ditemukan; perlu pemeriksaan manual.";
         let status = finish_review(database, &item, parsed.transaction_id.as_deref(), parsed.transaction_date.as_deref(), parsed.recipient_name.as_deref(), parsed.amount, None, Some(reason), None, app)?;
         return Ok(Some(status));
     }
@@ -451,12 +469,19 @@ fn process_one(
     let ocr = match run_tesseract(image_path, options) {
         Ok(result) => result,
         Err(error) => {
+            if let Some(note) = parsed.email_transfer_note.as_deref().filter(|note| !note.trim().is_empty()) {
+                let raw = format!("OCR error: {error}");
+                return finalize_email_only_with_image(database, &item, &parsed, note, &raw, image_path, app);
+            }
             let reason = format!("OCR gagal: {error}");
             let status = finish_review(database, &item, parsed.transaction_id.as_deref(), parsed.transaction_date.as_deref(), parsed.recipient_name.as_deref(), parsed.amount, Some(image_path), Some(&reason), Some(&reason), app)?;
             return Ok(Some(status));
         }
     };
     if ocr.status != OcrExtractionStatus::Completed || ocr.transfer_note.as_deref().unwrap_or_default().trim().is_empty() {
+        if let Some(note) = parsed.email_transfer_note.as_deref().filter(|note| !note.trim().is_empty()) {
+            return finalize_email_only_with_image(database, &item, &parsed, note, &ocr.raw_text, image_path, app);
+        }
         let reason = ocr.review_reason.as_deref().unwrap_or("Catatan Transfer kosong atau tidak terbaca.");
         let status = finish_review(database, &item, parsed.transaction_id.as_deref(), parsed.transaction_date.as_deref(), parsed.recipient_name.as_deref(), parsed.amount, Some(image_path), Some(reason), None, app)?;
         persist_ocr_raw(database, transaction_id, &ocr.raw_text)?;
@@ -464,6 +489,80 @@ fn process_one(
     }
 
     finalize_with_duplicate_check(database, &item, &parsed, &ocr.transfer_note, &ocr.raw_text, image_path, app)
+}
+
+
+/// Creates separate copyable ledger rows for Flip's fee/code items.
+/// Synthetic source keys keep the existing per-message uniqueness constraint while
+/// making these rows non-retryable by the Gmail extraction worker.
+fn create_email_fee_component_rows(
+    database: &Database,
+    item: &PendingItem,
+    parsed: &super::email_parser::EmailTransactionFields,
+) -> Result<(), String> {
+    let admin_net = parsed.admin_fee.unwrap_or(0).saturating_sub(parsed.discount.unwrap_or(0)).max(0);
+    let mut components: Vec<(&str, i64)> = Vec::new();
+    if let Some(code) = parsed.unique_code.filter(|value| *value > 0) { components.push(("Kode Flip", code)); }
+    if admin_net > 0 { components.push(("Biaya Admin", admin_net)); }
+    if components.is_empty() { return Ok(()); }
+
+    let component_status = if parsed.transaction_date.is_some() { "Completed" } else { "Needs Review" };
+    let component_review_reason = if parsed.transaction_date.is_some() { None } else { Some("Tanggal transaksi tidak ditemukan di email." ) };
+    let connection = database.connection.lock().map_err(lock_err)?;
+    for (kind, amount) in components {
+        let synthetic_message_id = format!("{}::flip-component:{}", item.message_id, kind.replace(' ', "_"));
+        connection.execute(
+            "INSERT OR IGNORE INTO transactions (
+                gmail_account_id, gmail_message_id, flip_transaction_id, transaction_date,
+                recipient_name, amount, transfer_note, status, review_reason, png_path,
+                created_at, updated_at
+             ) VALUES (?1, ?2, NULL, ?3, NULL, ?4, ?5, ?6, ?7, NULL,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            params![item.account_id, synthetic_message_id, parsed.transaction_date, amount, kind, component_status, component_review_reason],
+        ).map_err(db_err)?;
+        // Keep generated component rows fresh on retry, without touching copy tracking.
+        connection.execute(
+            "UPDATE transactions SET transaction_date=COALESCE(?1,transaction_date), amount=?2,
+                transfer_note=?3, status=?4, review_reason=?5, last_error=NULL,
+                updated_at=CURRENT_TIMESTAMP WHERE gmail_account_id=?6 AND gmail_message_id=?7",
+            params![parsed.transaction_date, amount, kind, component_status, component_review_reason, item.account_id, synthetic_message_id],
+        ).map_err(db_err)?;
+    }
+    Ok(())
+}
+
+
+fn finalize_email_only(
+    database: &Database, item: &PendingItem, parsed: &super::email_parser::EmailTransactionFields,
+    note: &str, app: Option<&AppHandle>,
+) -> Result<Option<String>, String> {
+    finalize_email_only_with_image(database, item, parsed, note, "Email body fallback", "", app)
+}
+
+
+fn finalize_email_only_with_image(
+    database: &Database, item: &PendingItem, parsed: &super::email_parser::EmailTransactionFields,
+    note: &str, raw_text: &str, image_path: &str, app: Option<&AppHandle>,
+) -> Result<Option<String>, String> {
+    let status = if parsed.review_reasons.is_empty() { "Completed" } else { "Needs Review" };
+    let reason = if status == "Completed" { None } else { Some(parsed.review_reasons.join(" ")) };
+    let mut connection = database.connection.lock().map_err(lock_err)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
+    transaction.execute(
+        "UPDATE transactions SET flip_transaction_id=?1, transaction_date=?2, recipient_name=?3,
+            amount=?4, transfer_note=?5, ocr_raw_result=?6, png_path=NULLIF(?7,''), status=?8,
+            review_reason=?9, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?10",
+        params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount,
+            note, raw_text, image_path, status, reason, item.id],
+    ).map_err(db_err)?;
+    transaction.execute(
+        "INSERT INTO processing_logs (gmail_account_id, transaction_id, process_type, status, error_message)
+         VALUES (?1, ?2, 'email-fallback', ?3, ?4)",
+        params![item.account_id, item.id, status, reason],
+    ).map_err(db_err)?;
+    transaction.commit().map_err(db_err)?;
+    emit_progress(app, item.id, status, reason.as_deref());
+    Ok(Some(status.to_string()))
 }
 
 
@@ -510,8 +609,8 @@ fn save_parsed_fields(database: &Database, id: i64, parsed: &super::email_parser
         "UPDATE transactions SET flip_transaction_id=COALESCE(?1, flip_transaction_id),
             transaction_date=COALESCE(?2, transaction_date),
             recipient_name=COALESCE(?3, recipient_name),
-            amount=COALESCE(?4, amount), updated_at=CURRENT_TIMESTAMP WHERE id=?5",
-        params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount, id],
+            amount=COALESCE(?4, amount), transfer_note=COALESCE(?5, transfer_note), updated_at=CURRENT_TIMESTAMP WHERE id=?6",
+        params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount, parsed.email_transfer_note, id],
     ).map_err(db_err)?;
     Ok(())
 }
@@ -597,6 +696,10 @@ fn finish_review(
             updated_at=CURRENT_TIMESTAMP WHERE id=?9",
         params![status, final_reason, flip_id, date, recipient, amount, png_path, error, item.id],
     ).map_err(db_err)?;
+    // Only auto-merge duplicate records when they complement each other without conflicts.
+    if duplicate {
+        let _ = auto_merge_complementary(&transaction, flip_id.unwrap_or_default())?;
+    }
     transaction.execute(
         "INSERT INTO processing_logs (gmail_account_id, transaction_id, process_type, status, error_message)
          VALUES (?1, ?2, 'extraction', ?3, ?4)",
@@ -633,13 +736,16 @@ fn finalize_with_duplicate_check(
             review_reason=?9, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?10",
         params![parsed.transaction_id, parsed.transaction_date, parsed.recipient_name, parsed.amount, transfer_note, raw_text, image_path, status, reason, item.id],
     ).map_err(db_err)?;
+    if duplicate {
+        let _ = auto_merge_complementary(&transaction, parsed.transaction_id.as_deref().unwrap_or_default())?;
+    }
     transaction.execute(
         "INSERT INTO processing_logs (gmail_account_id, transaction_id, process_type, status, error_message)
          VALUES (?1, ?2, 'extraction', ?3, ?4)",
         params![item.account_id, item.id, status, reason],
     ).map_err(db_err)?;
     transaction.commit().map_err(db_err)?;
-    emit_progress(app, item.id, status, reason);
+    emit_progress(app, item.id, status, reason.as_deref());
     Ok(Some(status.to_string()))
 }
 
@@ -742,9 +848,24 @@ fn emit_progress(app: Option<&AppHandle>, transaction_id: i64, status: &str, mes
 }
 
 
+/// Detect Flip ST confirmation emails that only acknowledge a transfer request.
+/// These are intentionally excluded from the transaction list entirely.
+fn is_flip_transfer_confirmation_email(body: &str) -> bool {
+    let normalized = body.to_ascii_lowercase();
+    normalized.contains("kamu baru aja ngajuin transaksi kirim uang via flip")
+        && normalized.contains("supaya transaksinya bisa diproses")
+        && normalized.contains("transfer ke rekening flip")
+        && normalized.contains("atas nama")
+        && normalized.contains("fliptech lentera ins")
+}
+
+
 /// Detect Flip multi-destination transfer instruction emails, which are not
 /// completed transfer receipts and should not enter OCR/extraction.
 fn is_multi_destination_instruction_email(body: &str) -> bool {
+    // Detailed Flip payment instructions are intentionally ledgered: the email
+    // contains Nominal, Kode Unik, Admin Fee and a transfer total.
+    if super::email_parser::is_flip_fee_payment_template(body) { return false; }
     let normalized = body.to_ascii_lowercase();
     let has_multi_destination_phrase = normalized.contains("transaksi ke banyak tujuan")
         || normalized.contains("buat transaksi ke banyak tujuan")
@@ -854,10 +975,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fee_components_create_code_and_admin_rows_when_admin_is_not_discounted() {
+        let (database, path) = create_test_database();
+        let item = PendingItem { id: 1, account_id: 1, message_id: "message-1".to_string(), subject: None, payload_json: "{}".to_string() };
+        let parsed = super::email_parser::parse_flip_email(None, "Informasi Transaksi\nID Transaksi\n#CS261123103326704Y5ULUO\nWaktu Terkirim\n23 November 2026 13:30 WIB\nNama Tujuan\nFLIPTECH LENTERA INS\nNominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nJumlah Transfer\nRp2.163.525");
+        create_email_fee_component_rows(&database, &item, &parsed).unwrap();
+        let connection = database.connection.lock().unwrap();
+        let rows: Vec<(String, i64, String)> = connection.prepare("SELECT transfer_note,amount,status FROM transactions WHERE gmail_message_id LIKE 'message-1::flip-component:%' ORDER BY id").unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap().collect::<Result<_,_>>().unwrap();
+        assert_eq!(rows, vec![("Kode Flip".to_string(),325,"Completed".to_string()),("Biaya Admin".to_string(),4000,"Completed".to_string())]);
+        drop(connection);
+        remove_test_database(database, &path);
+    }
+
+
+    #[test]
+    fn fee_component_discount_removes_admin_row_but_keeps_unique_code() {
+        let (database, path) = create_test_database();
+        let item = PendingItem { id: 1, account_id: 1, message_id: "message-1".to_string(), subject: None, payload_json: "{}".to_string() };
+        let parsed = super::email_parser::parse_flip_email(None, "Informasi Transaksi\nID Transaksi\n#CS261123103326704Y5ULUO\nWaktu Terkirim\n23 November 2026 13:30 WIB\nNama Tujuan\nFLIPTECH LENTERA INS\nNominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nDiskon\n--Rp4.000\nJumlah Transfer\nRp2.159.525");
+        create_email_fee_component_rows(&database, &item, &parsed).unwrap();
+        let connection = database.connection.lock().unwrap();
+        let rows: Vec<(String, i64)> = connection.prepare("SELECT transfer_note,amount FROM transactions WHERE gmail_message_id LIKE 'message-1::flip-component:%' ORDER BY id").unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?))).unwrap().collect::<Result<_,_>>().unwrap();
+        assert_eq!(rows, vec![("Kode Flip".to_string(),325)]);
+        drop(connection);
+        remove_test_database(database, &path);
+    }
+
+
+    #[test]
+    fn detects_st_confirmation_email_to_skip_entirely() {
+        let body = "Kamu baru aja ngajuin transaksi kirim uang via Flip. Supaya transaksinya bisa diproses, yuk transfer ke rekening Flip. Atas Nama FLIPTECH LENTERA INS.";
+        assert!(is_flip_transfer_confirmation_email(body));
+        assert!(!is_flip_transfer_confirmation_email("Informasi transaksi Nominal Rp10.000 Kode Unik Rp327 Biaya Admin Rp4.000"));
+    }
+
+    #[test]
     fn detects_multi_destination_transfer_instruction_email() {
         let body = "Kamu baru aja buat transaksi ke banyak tujuan via Flip.\nJumlah Tujuan\n2\nAgar transaksinya bisa kami proses, silakan transfer ke rekening Flip.\nJumlah Transfer\nRp5.388.825";
         assert!(is_multi_destination_instruction_email(body));
     }
+
+    #[test]
+    fn detailed_flip_fee_instruction_email_is_not_skipped() {
+        let body = "Informasi Transaksi\nID Transaksi\n#CS261123103326704Y5ULUO\nJumlah Tujuan\n2\nNominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nDiskon\n--Rp4.000\nJumlah Transfer\nRp2.159.525\nAtas Nama\nFLIPTECH LENTERA INS";
+        assert!(!is_multi_destination_instruction_email(body));
+    }
+
 
     #[test]
     fn does_not_skip_single_recipient_transfer_receipt() {
@@ -985,6 +1148,10 @@ mod tests {
             transaction_date: Some("02/01/2026".to_string()),
             recipient_name: None,
             amount: None,
+            admin_fee: None,
+            unique_code: None,
+            discount: None,
+            email_transfer_note: None,
             review_reasons: vec!["partial parse".to_string()],
         };
         save_parsed_fields(&database, 1, &partial).unwrap();

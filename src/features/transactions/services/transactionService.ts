@@ -4,4 +4,5 @@ export const transactionService = {
   retry: tauriBridge.retryExtraction,
   correctNote: tauriBridge.correctTransferNote,
   saveCorrection: tauriBridge.saveTransactionCorrection,
+  mergeDuplicates: tauriBridge.mergeDuplicateTransactions,
 };

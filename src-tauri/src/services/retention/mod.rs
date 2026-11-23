@@ -35,9 +35,18 @@ pub fn set_settings(db: &Database, days: u32) -> Result<RetentionSettings, Strin
 pub fn preview(db: &Database) -> Result<RetentionPreview, String> {
     let conn = db.connection.lock().map_err(lock_error)?;
     let days: u32 = conn.query_row("SELECT COALESCE((SELECT CAST(setting_value AS INTEGER) FROM app_settings WHERE setting_key='retention_period'), ?1)", [DEFAULT_DAYS], |r| r.get(0)).map_err(db_error)?;
-    let eligible_count: i64 = conn.query_row("SELECT COUNT(*) FROM transactions WHERE first_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days')) <= datetime('now')", [days], |r| r.get(0)).map_err(db_error)?;
-    let oldest_expired_at: Option<String> = conn.query_row("SELECT MIN(COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days'))) FROM transactions WHERE first_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days')) <= datetime('now')", [days], |r| r.get(0)).map_err(db_error)?;
-    let png_file_count: i64 = conn.query_row("SELECT COUNT(DISTINCT png_path) FROM transactions WHERE first_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days')) <= datetime('now') AND png_path IS NOT NULL AND png_path <> ''", [days], |r| r.get(0)).map_err(db_error)?;
+    let eligible_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM transactions WHERE first_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days')) <= datetime('now')",
+        [days], |r| r.get::<_, i64>(0),
+    ).map_err(db_error)?;
+    let oldest_expired_at: Option<String> = conn.query_row(
+        "SELECT MIN(COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days'))) FROM transactions WHERE first_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days')) <= datetime('now')",
+        [days], |r| r.get::<_, Option<String>>(0),
+    ).map_err(db_error)?;
+    let png_file_count: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT png_path) FROM transactions WHERE first_copied_at IS NOT NULL AND status IN ('Completed','Needs Review') AND COALESCE(retention_until,datetime(first_copied_at, '+' || ?1 || ' days')) <= datetime('now') AND png_path IS NOT NULL AND png_path <> ''",
+        [days], |r| r.get::<_, i64>(0),
+    ).map_err(db_error)?;
     Ok(RetentionPreview { retention_days: days, eligible_count: eligible_count.max(0) as usize, oldest_expired_at, png_file_count: png_file_count.max(0) as usize })
 }
 

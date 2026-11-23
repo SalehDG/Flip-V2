@@ -139,6 +139,7 @@ pub fn run() {
             commands::extraction_commands::get_extraction_transactions,
             commands::extraction_commands::get_extraction_status_summary,
             commands::extraction_commands::mark_transactions_copied,
+            commands::extraction_commands::merge_duplicate_transactions,
             commands::retention_commands::get_retention_settings,
             commands::retention_commands::set_retention_settings,
             commands::retention_commands::preview_retention_cleanup,

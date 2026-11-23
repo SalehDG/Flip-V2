@@ -7,6 +7,7 @@ use crate::{
         retry_transaction_extraction, run_pending_extraction, mark_transactions_copied as mark_copied_records, ExtractionStatusSummary,
         ExtractionSummary, ExtractionTransactionRecord, ProcessingLogRecord,
     },
+    services::extraction::merge::merge_duplicate_group,
     services::ocr::TesseractOptions,
 };
 
@@ -93,4 +94,10 @@ pub fn get_extraction_status_summary(
 #[tauri::command]
 pub fn mark_transactions_copied(database: State<'_, Database>, transaction_ids: Vec<i64>) -> Result<usize, String> {
     mark_copied_records(database.inner(), &transaction_ids)
+}
+
+
+#[tauri::command]
+pub fn merge_duplicate_transactions(database: State<'_, Database>, transaction_id: i64) -> Result<i64, String> {
+    merge_duplicate_group(database.inner(), transaction_id)
 }

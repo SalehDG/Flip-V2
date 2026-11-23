@@ -14,6 +14,8 @@ export const tauriBridge = {
   getProcessingLogs: (limit = 200) => invoke<ProcessingLogRecord[]>('get_processing_logs', { limit }),
   markTransactionsCopied: (transactionIds: number[]) =>
     invoke<number>('mark_transactions_copied', { transactionIds }),
+  mergeDuplicateTransactions: (transactionId: number) =>
+    invoke<number>('merge_duplicate_transactions', { transactionId }),
   getRetentionSettings: () => invoke<RetentionSettings>('get_retention_settings'),
   setRetentionSettings: (retentionDays: number) => invoke<RetentionSettings>('set_retention_settings', { retentionDays }),
   previewRetentionCleanup: () => invoke<RetentionPreview>('preview_retention_cleanup'),

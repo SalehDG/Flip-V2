@@ -1,6 +1,6 @@
 use rusqlite::{Connection, Result};
 
-const CURRENT_VERSION: i64 = 5;
+const CURRENT_VERSION: i64 = 6;
 
 pub fn run(connection: &mut Connection) -> Result<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -304,6 +304,26 @@ pub fn run(connection: &mut Connection) -> Result<()> {
     }
 
 
+    // Version 6 adds reversible soft-merge metadata. Merged source rows remain
+    // stored for audit, while queries can exclude them from active transaction lists.
+    if version < 6 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "ALTER TABLE transactions ADD COLUMN merged_into_id INTEGER;
+             CREATE INDEX idx_transactions_merged_into ON transactions(merged_into_id);
+             CREATE TABLE transaction_merge_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                master_transaction_id INTEGER NOT NULL,
+                source_transaction_id INTEGER NOT NULL,
+                source_snapshot_json TEXT NOT NULL,
+                merge_type TEXT NOT NULL,
+                merged_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );"
+        )?;
+        transaction.pragma_update(None, "user_version", 6)?;
+        transaction.commit()?;
+    }
+
     if version > CURRENT_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
     }
@@ -336,7 +356,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
 
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
@@ -371,7 +391,7 @@ mod tests {
         assert!(!columns.iter().any(|c| c == "retry_count"));
 
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
 
@@ -418,7 +438,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
 
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]

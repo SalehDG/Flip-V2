@@ -6,7 +6,11 @@ pub struct EmailTransactionFields {
     pub transaction_id: Option<String>,
     pub transaction_date: Option<String>, // DD/MM/YYYY
     pub recipient_name: Option<String>,
-    pub amount: Option<i64>, // integer Rupiah
+    pub amount: Option<i64>, // transaction nominal, integer Rupiah
+    pub admin_fee: Option<i64>,
+    pub unique_code: Option<i64>,
+    pub discount: Option<i64>,
+    pub email_transfer_note: Option<String>,
     pub review_reasons: Vec<String>,
 }
 
@@ -17,6 +21,10 @@ pub fn parse_flip_email(_subject: Option<&str>, decoded_body: &str) -> EmailTran
     let transaction_date = extract_sent_date(&normalized);
     let recipient_name = extract_recipient(&normalized);
     let amount = extract_amount(&normalized);
+    let admin_fee = extract_labeled_amount(&normalized, &["Biaya Admin", "Admin Fee"]);
+    let unique_code = extract_labeled_amount(&normalized, &["Kode Unik", "Kode Flip", "Kode Unik Flip"]);
+    let discount = extract_labeled_amount(&normalized, &["Diskon", "Discount"]);
+    let email_transfer_note = extract_labeled_text(&normalized, &["Catatan Transfer", "Uraian", "Remark"]);
 
     let mut review_reasons = Vec::new();
     if transaction_id.is_none() { review_reasons.push("Transaction ID tidak ditemukan.".to_string()); }
@@ -24,7 +32,17 @@ pub fn parse_flip_email(_subject: Option<&str>, decoded_body: &str) -> EmailTran
     if recipient_name.is_none() { review_reasons.push("Nama Tujuan tidak ditemukan.".to_string()); }
     if amount.is_none() { review_reasons.push("Nominal transfer tidak ditemukan atau ambigu.".to_string()); }
 
-    EmailTransactionFields { transaction_id, transaction_date, recipient_name, amount, review_reasons }
+    EmailTransactionFields { transaction_id, transaction_date, recipient_name, amount, admin_fee, unique_code, discount, email_transfer_note, review_reasons }
+}
+
+
+pub(crate) fn is_flip_fee_payment_template(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    normalized.contains("informasi transaksi")
+        && normalized.contains("jumlah tujuan")
+        && normalized.contains("jumlah transfer")
+        && normalized.contains("kode unik")
+        && normalized.contains("biaya admin")
 }
 
 
@@ -46,7 +64,7 @@ fn extract_transaction_id(text: &str) -> Option<String> {
         .split_whitespace().next()?
         .trim_matches(|c: char| !c.is_ascii_alphanumeric());
     let id = token.trim();
-    (id.starts_with("ST") && id.len() >= 8 && id.chars().all(|c| c.is_ascii_alphanumeric()))
+    ((id.starts_with("ST") || id.starts_with("CS")) && id.len() >= 8 && id.chars().all(|c| c.is_ascii_alphanumeric()))
         .then(|| id.to_string())
 }
 
@@ -122,31 +140,71 @@ fn extract_recipient(text: &str) -> Option<String> {
 
 
 fn extract_amount(text: &str) -> Option<i64> {
+    // The transaction's "Nominal" is preferred. "Jumlah Transfer" includes
+    // Flip's fee/code adjustments and must not replace the transaction amount.
+    extract_labeled_amount(text, &["Nominal"])
+        .or_else(|| extract_labeled_amount(text, &["Jumlah Transfer", "Total Transfer"]))
+        .or_else(|| {
+            let all = text.lines().flat_map(|line| parse_rp_candidates(line)).collect::<Vec<_>>();
+            let unique = unique_values(all);
+            (unique.len() == 1).then(|| unique[0])
+        })
+}
+
+
+fn extract_labeled_amount(text: &str, labels: &[&str]) -> Option<i64> {
     let lines: Vec<&str> = text.lines().collect();
-    // Amount lines are preferred; if several labeled amounts conflict, don't guess.
-    let mut labeled = Vec::new();
+    let known_labels = ["id transaksi", "transaction id", "waktu terkirim", "nama tujuan", "nominal", "jumlah transfer", "total transfer", "biaya admin", "admin fee", "kode unik", "kode flip", "diskon", "discount", "catatan transfer", "uraian", "remark", "bank", "nomor rekening", "atas nama"];
+    let mut values = Vec::new();
     for (index, line) in lines.iter().enumerate() {
-        let lower = line.to_ascii_lowercase();
-        if ["nominal", "jumlah transfer", "total transfer"].iter().any(|label| lower.contains(label)) {
-            let mut candidates = parse_rp_candidates(line);
-            if candidates.is_empty() {
-                for next_line in lines.iter().skip(index + 1).take(2) {
-                    if looks_like_label(next_line) { break; }
-                    candidates.extend(parse_rp_candidates(next_line));
-                    if !candidates.is_empty() { break; }
-                }
+        let lower = line.trim().to_lowercase();
+        if !labels.iter().any(|label| lower.starts_with(&label.to_lowercase())) { continue; }
+        let after_label = labels.iter().find_map(|label| {
+            lower.find(&label.to_lowercase()).map(|offset| offset + label.len())
+        }).unwrap_or(line.len());
+        values.extend(parse_currency_candidates(&line[after_label..]));
+        if values.is_empty() {
+            for next in lines.iter().skip(index + 1).take(2) {
+                if known_labels.iter().any(|label| next.trim().to_lowercase().starts_with(label)) { break; }
+                values.extend(parse_currency_candidates(next));
+                if !values.is_empty() { break; }
             }
-            labeled.extend(candidates);
         }
     }
-    let labeled_unique = unique_values(labeled);
-    if labeled_unique.len() == 1 { return Some(labeled_unique[0]); }
-    if labeled_unique.len() > 1 { return None; }
-
-    // If no amount label is present, accept only one unique currency amount.
-    let all = lines.iter().flat_map(|line| parse_rp_candidates(line)).collect::<Vec<_>>();
-    let unique = unique_values(all);
+    let unique = unique_values(values);
     (unique.len() == 1).then(|| unique[0])
+}
+
+
+fn parse_currency_candidates(text: &str) -> Vec<i64> {
+    let mut results = parse_rp_candidates(text);
+    if results.is_empty() {
+        let digits: String = text.chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',' || *c == ' ').filter(char::is_ascii_digit).collect();
+        if let Ok(value) = digits.parse::<i64>() { if value > 0 { results.push(value); } }
+    }
+    results
+}
+
+
+fn extract_labeled_text(text: &str, labels: &[&str]) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let known_labels = ["id transaksi", "transaction id", "waktu terkirim", "nama tujuan", "nominal", "jumlah transfer", "total transfer", "biaya admin", "admin fee", "kode unik", "kode flip", "diskon", "discount", "bank", "nomor rekening", "atas nama"];
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let label = match labels.iter().find(|label| trimmed.to_lowercase().starts_with(&label.to_lowercase())) {
+            Some(label) => *label,
+            None => continue,
+        };
+        let value = trimmed[label.len()..].trim().trim_start_matches([':', '-', ' ']).trim();
+        if !value.is_empty() && parse_currency_candidates(value).is_empty() { return Some(value.to_string()); }
+        for next in lines.iter().skip(index + 1).take(2) {
+            let value = next.trim();
+            if value.is_empty() { continue; }
+            if known_labels.iter().any(|known| value.to_lowercase().starts_with(known)) { break; }
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 
@@ -248,4 +306,26 @@ mod tests {
         assert_eq!(extract_amount("Rp100.000\nRp200.000"), None);
         assert_eq!(extract_amount("Nominal transfer Rp200.000\nFee Rp2.000"), Some(200000));
     }
+    #[test]
+    fn parses_flip_transaction_fee_components_and_prefers_nominal_over_transfer_total() {
+        let body = "Informasi Transaksi\nID Transaksi\n#CS261123103326704Y5ULUO\nNominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nDiskon\n--Rp4.000\nJumlah Transfer\nRp2.159.525";
+        let parsed = parse_flip_email(None, body);
+        assert_eq!(parsed.transaction_id.as_deref(), Some("CS261123103326704Y5ULUO"));
+        assert_eq!(parsed.amount, Some(2_159_200));
+        assert_eq!(parsed.admin_fee, Some(4_000));
+        assert_eq!(parsed.unique_code, Some(325));
+        assert_eq!(parsed.discount, Some(4_000));
+        assert_eq!(parsed.recipient_name, None); // no recipient label in this compact fixture
+    }
+
+    #[test]
+    fn payment_instruction_template_uses_flip_account_name_and_transfer_label() {
+        let body = "Informasi Transaksi\nID Transaksi\n#CS261123103326704Y5ULUO\nJumlah Tujuan\n2\nNominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nDiskon\n--Rp4.000\nJumlah Transfer\nRp2.159.525\nAtas Nama\nFLIPTECH LENTERA INS";
+        let parsed = parse_flip_email(None, body);
+        assert_eq!(parsed.recipient_name, None); // Atas Nama is the Flip account, not recipient.
+        assert_eq!(parsed.email_transfer_note, None); // Instruction email has no transfer note.
+        assert!(is_flip_fee_payment_template(body));
+    }
+
+
 }
