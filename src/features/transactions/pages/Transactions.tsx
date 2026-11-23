@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { listen } from '@tauri-apps/api/event';
-import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { transactionService } from '../services/transactionService';
 import { tauriBridge } from '../../../services/tauri/bridge';
 import type { ExtractionProgressEvent, ExtractionTransaction } from '../../../services/tauri/types';
@@ -102,7 +102,7 @@ export default function Transactions() {
   const [editingId, setEditingId] = useState<number | null>(null); const [noteDraft, setNoteDraft] = useState('');
   const [reviewRow, setReviewRow] = useState<ExtractionTransaction | null>(null);
   const [reviewDraft, setReviewDraft] = useState({ date: '', recipient: '', transactionId: '', amount: '', note: '' }); const [reviewError, setReviewError] = useState('');
-  const [messageOpen, setMessageOpen] = useState(true); const [invoiceOpen, setInvoiceOpen] = useState(true); const [messageBody, setMessageBody] = useState(''); const [messageLoading, setMessageLoading] = useState(false); const [messageError, setMessageError] = useState(''); const [copyNotice, setCopyNotice] = useState('');
+  const [messageOpen, setMessageOpen] = useState(true); const [invoiceOpen, setInvoiceOpen] = useState(true); const [messageBody, setMessageBody] = useState(''); const [messageLoading, setMessageLoading] = useState(false); const [messageError, setMessageError] = useState(''); const [copyNotice, setCopyNotice] = useState(''); const [detailInvoiceDataUrl, setDetailInvoiceDataUrl] = useState(''); const [detailInvoiceLoading, setDetailInvoiceLoading] = useState(false); const [detailInvoiceError, setDetailInvoiceError] = useState(''); const [reviewInvoiceDataUrl, setReviewInvoiceDataUrl] = useState(''); const [reviewInvoiceLoading, setReviewInvoiceLoading] = useState(false); const [reviewInvoiceError, setReviewInvoiceError] = useState(''); const [zoomInvoiceSrc, setZoomInvoiceSrc] = useState('');
   // Load transactions in batches. The old single request capped the page at 250 rows,
   // which caused older statuses to appear as zero even though they existed in SQLite.
   const load = useCallback(async () => {
@@ -159,6 +159,33 @@ export default function Transactions() {
   const pageRowStart = pageGroups.length ? (page - 1) * pageSize + 1 : 0;
   const pageRowEnd = Math.min(page * pageSize, groupedRows.length);
   const selectedRow = rows.find(r => r.id === selectedId) ?? null;
+  useEffect(() => {
+    if (!detailOpen || !selectedRow?.pngPath) {
+      setDetailInvoiceDataUrl(''); setDetailInvoiceError(''); setDetailInvoiceLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setDetailInvoiceDataUrl(''); setDetailInvoiceError(''); setDetailInvoiceLoading(true);
+    invoke<string | null>('get_transaction_invoice_data_url', { transactionId: selectedRow.id })
+      .then(data => { if (!cancelled) { if (data) setDetailInvoiceDataUrl(data); else setDetailInvoiceError('File invoice tidak tersedia.'); } })
+      .catch(error => { if (!cancelled) setDetailInvoiceError(String(error)); })
+      .finally(() => { if (!cancelled) setDetailInvoiceLoading(false); });
+    return () => { cancelled = true; };
+  }, [detailOpen, selectedRow?.id, selectedRow?.pngPath]);
+  useEffect(() => {
+    if (!reviewRow || !invoiceOpen || !reviewRow.pngPath) {
+      setReviewInvoiceDataUrl(''); setReviewInvoiceError(''); setReviewInvoiceLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setReviewInvoiceDataUrl(''); setReviewInvoiceError(''); setReviewInvoiceLoading(true);
+    // Use the same backend-backed invoice retrieval as the transaction detail panel.
+    invoke<string | null>('get_transaction_invoice_data_url', { transactionId: reviewRow.id })
+      .then(data => { if (!cancelled) { if (data) setReviewInvoiceDataUrl(data); else setReviewInvoiceError('File invoice tidak tersedia.'); } })
+      .catch(error => { if (!cancelled) setReviewInvoiceError(String(error)); })
+      .finally(() => { if (!cancelled) setReviewInvoiceLoading(false); });
+    return () => { cancelled = true; };
+  }, [reviewRow?.id, reviewRow?.pngPath, invoiceOpen]);
   useEffect(() => { setPage(1); }, [filter, dateFilter, customStart, customEnd, accountFilter, subPage, search]);
   async function retry(id: number) { setSavingId(id); setError(''); try { await transactionService.retry(id); await load(); } catch (e) { setError(String(e)); } finally { setSavingId(null); } }
   async function mergeDuplicates(id: number) {
@@ -222,7 +249,7 @@ export default function Transactions() {
     {!pageRows.length && <tr><td colSpan={7} className="empty-cell">{loading ? 'Memuat transaksi…' : 'Tidak ada transaksi yang cocok dengan filter.'}</td></tr>}
     </tbody></table></div><footer className="tx-pagination"><span>Menampilkan grup email {pageRowStart}–{pageRowEnd} dari {groupedRows.length.toLocaleString('id-ID')} grup <small>· {filteredRows.length.toLocaleString('id-ID')} baris transaksi · Seluruh data dimuat</small></span><div><button className="tx-page-btn" disabled={page<=1} onClick={() => setPage(p=>p-1)}>‹</button><span className="tx-page-current">{page}</span><span> / {pageCount}</span><button className="tx-page-btn" disabled={page>=pageCount} onClick={() => setPage(p=>p+1)}>›</button></div></footer></div>
     {detailOpen && !reviewRow && <aside className={`tx-detail-panel ${selectedRow ? '' : 'empty'}`}><div className="tx-detail-header"><div><h3>Detail Transaksi</h3><p>{selectedRow ? 'Informasi transaksi terpilih' : 'Pilih transaksi untuk melihat detail'}</p></div>{selectedRow && <button className="tx-close-detail" onClick={() => setDetailOpen(false)} aria-label="Tutup detail">×</button>}</div>
-    {selectedRow ? <><div className="tx-detail-status-line"><span className={`status-chip ${statusClass(selectedRow.status)}`}>{labels[selectedRow.status] ?? selectedRow.status}</span><span>{dateTimeLabel(selectedRow.transactionTimestamp)}</span></div><div className="tx-detail-fields"><div><label>Penerima</label><strong>{selectedRow.recipientName || 'Belum terbaca'}</strong></div><div><label>Nominal</label><strong className="tx-detail-amount">{formatAmount(selectedRow.amount)}</strong></div><div><label>Catatan Transfer</label><p>{selectedRow.transferNote || 'Belum ada catatan'}</p></div><div><label>Akun Gmail</label><p>{selectedRow.accountEmail || '—'}</p></div><div><label>Flip Transaction ID</label><p className="tx-detail-id">{selectedRow.flipTransactionId || 'Tidak tersedia'}</p></div><div><label>Alasan / Error</label><p className="tx-detail-reason">{selectedRow.reviewReason || selectedRow.lastError || 'Tidak ada catatan masalah.'}</p></div></div><div className="tx-detail-invoice"><div className="tx-detail-section-title"><strong>Lampiran Invoice</strong><span>{selectedRow.pngPath ? 'PNG' : 'Tidak tersedia'}</span></div>{selectedRow.pngPath ? <div className="tx-invoice-preview"><img src={convertFileSrc(selectedRow.pngPath)} alt="Lampiran invoice transaksi"/></div> : <div className="tx-invoice-empty">Lampiran PNG tidak tersedia untuk transaksi ini.</div>}</div><div className="tx-detail-actions">{selectedRow.status === 'Needs Review' && <button className="primary" onClick={() => openReview(selectedRow)}>Review & Edit</button>}<button className="subtle" onClick={() => openReview(selectedRow)}>Lihat Email Sumber</button><button className="subtle" onClick={() => openReview(selectedRow)}>Edit Transaksi</button>{['Failed','Needs Review','Duplicate Review'].includes(selectedRow.status) && <button className="subtle" onClick={() => void retry(selectedRow.id)} disabled={savingId===selectedRow.id}>{savingId===selectedRow.id ? 'Mencoba…' : 'Coba Ulang'}</button>}</div></> : <div className="tx-detail-empty-state"><span>⌁</span><strong>Belum ada transaksi dipilih</strong><p>Klik salah satu baris untuk melihat informasi lengkap dan lampiran.</p></div>}</aside>} </div>
+    {selectedRow ? <><div className="tx-detail-status-line"><span className={`status-chip ${statusClass(selectedRow.status)}`}>{labels[selectedRow.status] ?? selectedRow.status}</span><span>{dateTimeLabel(selectedRow.transactionTimestamp)}</span></div><div className="tx-detail-fields"><div><label>Penerima</label><strong>{selectedRow.recipientName || 'Belum terbaca'}</strong></div><div><label>Nominal</label><strong className="tx-detail-amount">{formatAmount(selectedRow.amount)}</strong></div><div><label>Catatan Transfer</label><p>{selectedRow.transferNote || 'Belum ada catatan'}</p></div><div><label>Akun Gmail</label><p>{selectedRow.accountEmail || '—'}</p></div><div><label>Flip Transaction ID</label><p className="tx-detail-id">{selectedRow.flipTransactionId || 'Tidak tersedia'}</p></div><div><label>Alasan / Error</label><p className="tx-detail-reason">{selectedRow.reviewReason || selectedRow.lastError || 'Tidak ada catatan masalah.'}</p></div></div><div className="tx-detail-invoice"><div className="tx-detail-section-title"><strong>Lampiran Invoice</strong><span>{selectedRow.pngPath ? 'PNG' : 'Tidak tersedia'}</span></div>{selectedRow.pngPath ? <div className="tx-invoice-preview">{detailInvoiceLoading ? <div className="tx-invoice-empty">Memuat invoice…</div> : detailInvoiceError ? <div className="tx-invoice-empty">Invoice gagal dimuat: {detailInvoiceError}</div> : detailInvoiceDataUrl ? <img src={detailInvoiceDataUrl} alt="Lampiran invoice transaksi" className="tx-invoice-zoomable" onClick={() => setZoomInvoiceSrc(detailInvoiceDataUrl)} title="Klik untuk memperbesar invoice"/> : <div className="tx-invoice-empty">Invoice tidak tersedia.</div>}</div> : <div className="tx-invoice-empty">Lampiran PNG tidak tersedia untuk transaksi ini.</div>}</div><div className="tx-detail-actions">{selectedRow.status === 'Needs Review' && <button className="primary" onClick={() => openReview(selectedRow)}>Review & Edit</button>}<button className="subtle" onClick={() => openReview(selectedRow)}>Lihat Email Sumber</button><button className="subtle" onClick={() => openReview(selectedRow)}>Edit Transaksi</button>{['Failed','Needs Review','Duplicate Review'].includes(selectedRow.status) && <button className="subtle" onClick={() => void retry(selectedRow.id)} disabled={savingId===selectedRow.id}>{savingId===selectedRow.id ? 'Mencoba…' : 'Coba Ulang'}</button>}</div></> : <div className="tx-detail-empty-state"><span>⌁</span><strong>Belum ada transaksi dipilih</strong><p>Klik salah satu baris untuk melihat informasi lengkap dan lampiran.</p></div>}</aside>} </div>
     {selectedIds.length>0 && <div className="tx-bulk-bar"><strong>{selectedIds.length} transaksi dipilih</strong><button className="subtle" onClick={() => setSelectedIds([])}>Batal Pilih</button><button className="primary" onClick={() => void copySelected()}>▣ Copy yang dipilih</button></div>}{copyNotice && <div className="tx-copy-notice" role="status">{copyNotice}<button onClick={() => setCopyNotice('')}>×</button></div>}<p className="tx-footnote">{subPage === 'latest' ? 'Terbaru menampilkan transaksi yang belum pernah di-copy.' : 'Data transaksi lokal · Catatan OCR dapat dikoreksi · Transaksi bermasalah dapat ditinjau ulang.'}</p>
       {reviewRow && createPortal(
         <>
@@ -304,7 +331,7 @@ export default function Transactions() {
                     <strong>Invoice</strong><span>{reviewRow.pngPath ? 'PNG attachment' : 'Tidak tersedia'} · {invoiceOpen ? 'Tutup ▲' : 'Buka ▼'}</span>
                   </button>
                   {invoiceOpen && <div className="invoice-canvas">
-                    {reviewRow.pngPath ? <img src={convertFileSrc(reviewRow.pngPath)} alt="Invoice transaksi"/> : <div className="invoice-empty"><span>▧</span><strong>Invoice tidak ditemukan</strong><p>File invoice belum tersimpan untuk transaksi ini.</p></div>}
+                    {reviewRow.pngPath ? (reviewInvoiceLoading ? <div className="invoice-empty"><strong>Memuat invoice…</strong></div> : reviewInvoiceError ? <div className="invoice-empty"><strong>Invoice gagal dimuat</strong><p>{reviewInvoiceError}</p></div> : reviewInvoiceDataUrl ? <img src={reviewInvoiceDataUrl} alt="Invoice transaksi" className="invoice-zoomable" onClick={() => setZoomInvoiceSrc(reviewInvoiceDataUrl)} title="Klik untuk memperbesar invoice"/> : <div className="invoice-empty"><span>▧</span><strong>Invoice tidak tersedia</strong></div>) : <div className="invoice-empty"><span>▧</span><strong>Invoice tidak ditemukan</strong><p>File invoice belum tersimpan untuk transaksi ini.</p></div>}
                   </div>}
                 </section>
               </div>
@@ -312,6 +339,12 @@ export default function Transactions() {
           </div>
         </div>
         </>, document.body
+      )}
+      {zoomInvoiceSrc && createPortal(
+        <div className="invoice-zoom-overlay" role="dialog" aria-modal="true" aria-label="Perbesar invoice" onClick={() => setZoomInvoiceSrc('')}>
+          <button type="button" className="invoice-zoom-close" onClick={() => setZoomInvoiceSrc('')} aria-label="Tutup zoom">×</button>
+          <img src={zoomInvoiceSrc} alt="Invoice diperbesar" onClick={e => e.stopPropagation()}/>
+        </div>, document.body
       )}
     </section>
   ;

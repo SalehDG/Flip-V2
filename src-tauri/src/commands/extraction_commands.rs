@@ -1,4 +1,5 @@
 use tauri::{AppHandle, State};
+use rusqlite::OptionalExtension;
 
 use crate::{
     databases::Database,
@@ -11,6 +12,28 @@ use crate::{
     services::ocr::TesseractOptions,
 };
 
+
+
+#[tauri::command]
+pub fn get_transaction_invoice_data_url(
+    database: State<'_, Database>,
+    transaction_id: i64,
+) -> Result<Option<String>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use std::fs;
+
+    let path: Option<String> = {
+        let connection = database.connection.lock().map_err(|e| format!("Database lock gagal: {e}"))?;
+        connection.query_row("SELECT png_path FROM transactions WHERE id=?1", [transaction_id], |row| row.get(0))
+            .optional().map_err(|e| format!("Gagal mengambil path invoice: {e}"))?
+    };
+    let Some(path) = path.filter(|p| !p.trim().is_empty()) else { return Ok(None); };
+    let bytes = fs::read(&path).map_err(|e| format!("Invoice tidak dapat dibaca ({path}): {e}"))?;
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") { "image/png" }
+        else if bytes.starts_with(b"\xff\xd8\xff") { "image/jpeg" }
+        else { return Err("Format invoice tidak dikenali sebagai PNG/JPEG".into()); };
+    Ok(Some(format!("data:{mime};base64,{}", STANDARD.encode(bytes))))
+}
 
 #[tauri::command]
 pub async fn run_transaction_extraction(

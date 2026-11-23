@@ -265,3 +265,22 @@
 .transactions-workspace .tx-account-dropdown{position:relative;z-index:30}
 .transactions-workspace .tx-account-menu{z-index:1000;max-height:320px;overflow-y:auto}
 .transactions-workspace .tx-custom-range{position:relative;z-index:5}
+
+/* Independent scrolling for the transaction detail pane. */
+.transactions-workspace .tx-detail-panel{
+  max-height:calc(100vh - 230px);
+  min-height:0;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+}
+.transactions-workspace .tx-invoice-zoomable{cursor:zoom-in;}
+@media(max-width:980px){
+  .transactions-workspace .tx-detail-panel{max-height:none;overflow:visible;}
+}
+
+.invoice-zoomable{cursor:zoom-in;max-width:100%;height:auto;}
+.invoice-zoom-overlay{position:fixed;inset:0;z-index:10000;background:rgba(8,20,36,.88);display:flex;align-items:center;justify-content:center;padding:30px;cursor:zoom-out;}
+.invoice-zoom-overlay img{max-width:96vw;max-height:92vh;width:auto;height:auto;object-fit:contain;background:#fff;border-radius:8px;box-shadow:0 12px 45px rgba(0,0,0,.35);cursor:default;}
+.invoice-zoom-close{position:absolute;top:18px;right:20px;width:42px;height:42px;border:1px solid rgba(255,255,255,.4);border-radius:12px;background:rgba(255,255,255,.12);color:#fff;font-size:30px;line-height:1;cursor:pointer;}
+@media(max-width:760px){.invoice-zoom-overlay{padding:12px}.invoice-zoom-overlay img{max-width:98vw;max-height:90vh}}

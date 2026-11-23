@@ -137,6 +137,7 @@ pub fn run() {
             commands::extraction_commands::save_transaction_correction,
             commands::extraction_commands::get_processing_logs,
             commands::extraction_commands::get_extraction_transactions,
+            commands::extraction_commands::get_transaction_invoice_data_url,
             commands::extraction_commands::get_extraction_status_summary,
             commands::extraction_commands::mark_transactions_copied,
             commands::extraction_commands::merge_duplicate_transactions,
