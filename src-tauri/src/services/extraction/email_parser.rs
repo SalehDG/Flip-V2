@@ -162,14 +162,16 @@ fn extract_labeled_amount(text: &str, labels: &[&str]) -> Option<i64> {
         let after_label = labels.iter().find_map(|label| {
             lower.find(&label.to_lowercase()).map(|offset| offset + label.len())
         }).unwrap_or(line.len());
-        values.extend(parse_currency_candidates(&line[after_label..]));
-        if values.is_empty() {
-            for next in lines.iter().skip(index + 1).take(2) {
+        let mut candidates = parse_currency_candidates(&line[after_label..]);
+        if candidates.is_empty() {
+            for next in lines.iter().skip(index + 1).take(3) {
+                if next.trim().is_empty() { continue; }
                 if known_labels.iter().any(|label| next.trim().to_lowercase().starts_with(label)) { break; }
-                values.extend(parse_currency_candidates(next));
-                if !values.is_empty() { break; }
+                candidates = parse_currency_candidates(next);
+                if !candidates.is_empty() { break; }
             }
         }
+        values.extend(candidates);
     }
     let unique = unique_values(values);
     (unique.len() == 1).then(|| unique[0])
@@ -316,6 +318,16 @@ mod tests {
         assert_eq!(parsed.unique_code, Some(325));
         assert_eq!(parsed.discount, Some(4_000));
         assert_eq!(parsed.recipient_name, None); // no recipient label in this compact fixture
+    }
+
+    #[test]
+    fn each_labeled_fee_field_parses_even_after_nominal_was_found() {
+        let body = "Nominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nDiskon\nRp4.000\nJumlah Transfer\nRp2.159.525";
+        let parsed = parse_flip_email(None, body);
+        assert_eq!(parsed.amount, Some(2_159_200));
+        assert_eq!(parsed.admin_fee, Some(4_000));
+        assert_eq!(parsed.unique_code, Some(325));
+        assert_eq!(parsed.discount, Some(4_000));
     }
 
     #[test]

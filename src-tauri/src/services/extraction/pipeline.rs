@@ -89,6 +89,7 @@ struct PendingItem {
     account_id: i64,
     message_id: String,
     subject: Option<String>,
+    internal_date: Option<String>, // formatted from Gmail internalDate (milliseconds)
     payload_json: String,
 }
 
@@ -437,13 +438,28 @@ fn process_one(
     let parsed = parse_flip_email(item.subject.as_deref(), &body);
     save_parsed_fields(database, item.id, &parsed)?;
     create_email_fee_component_rows(database, &item, &parsed)?;
+
+    // CS-style emails without image attachments are ledgered using email fallback.
+    // The Gmail internalDate is the authoritative date; recipient and note are intentionally blank.
+    let attachments = local_png_attachments(database, item.account_id, &item.message_id)?;
+    let is_cs_fallback = parsed.transaction_id.as_deref().is_some_and(|id| id.starts_with("CS"));
+    if attachments.is_empty() && is_cs_fallback {
+        let mut fallback = parsed.clone();
+        fallback.transaction_date = item.internal_date.clone().or(fallback.transaction_date);
+        fallback.recipient_name = None;
+        fallback.email_transfer_note = None;
+        fallback.review_reasons = vec!["Email fallback: penerima dan catatan transfer tidak tersedia. Nominal diambil dari email; mohon ditinjau.".to_string()];
+        save_parsed_fields(database, item.id, &fallback)?;
+        create_email_fee_component_rows(database, &item, &fallback)?;
+        return finalize_email_only_with_image(database, &item, &fallback, "", "Email body fallback", "", app);
+    }
+
     if !parsed.review_reasons.is_empty() {
         let reason = parsed.review_reasons.join(" ");
         let status = finish_review(database, &item, parsed.transaction_id.as_deref(), parsed.transaction_date.as_deref(), parsed.recipient_name.as_deref(), parsed.amount, None, Some(&reason), None, app)?;
         return Ok(Some(status));
     }
 
-    let attachments = local_png_attachments(database, item.account_id, &item.message_id)?;
     if attachments.is_empty() {
         if let Some(note) = parsed.email_transfer_note.as_deref().filter(|note| !note.trim().is_empty()) {
             return finalize_email_only(database, &item, &parsed, note, app);
@@ -569,8 +585,9 @@ fn finalize_email_only_with_image(
 fn claim_transaction(database: &Database, id: i64, automatic: bool) -> Result<Option<PendingItem>, String> {
     let mut connection = database.connection.lock().map_err(lock_err)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
-    let row: Option<(i64, String, Option<String>, String)> = transaction.query_row(
-        "SELECT t.gmail_account_id, t.gmail_message_id, m.subject, m.payload_json
+    let row: Option<(i64, String, Option<String>, Option<String>, String)> = transaction.query_row(
+        "SELECT t.gmail_account_id, t.gmail_message_id, m.subject,
+                strftime('%d/%m/%Y', CAST(m.internal_date AS INTEGER) / 1000, 'unixepoch'), m.payload_json
          FROM transactions t JOIN gmail_messages m
           ON m.gmail_account_id=t.gmail_account_id AND m.gmail_message_id=t.gmail_message_id
          WHERE t.id=?1 AND (
@@ -578,9 +595,9 @@ fn claim_transaction(database: &Database, id: i64, automatic: bool) -> Result<Op
             OR (?2=0 AND t.status IN ('Detected','Failed','Needs Review','Duplicate Review'))
          )",
         params![id, automatic, MAX_AUTOMATIC_ATTEMPTS],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     ).optional().map_err(db_err)?;
-    let Some((account_id, message_id, subject, payload_json)) = row else { transaction.commit().map_err(db_err)?; return Ok(None); };
+    let Some((account_id, message_id, subject, internal_date, payload_json)) = row else { transaction.commit().map_err(db_err)?; return Ok(None); };
     // Retrying must never erase previously extracted/corrected transaction data.
     // Keep fields intact while processing; successful extraction may replace them,
     // while partial/review results use COALESCE to retain existing values.
@@ -597,7 +614,7 @@ fn claim_transaction(database: &Database, id: i64, automatic: bool) -> Result<Op
         params![account_id, id],
     ).map_err(db_err)?;
     transaction.commit().map_err(db_err)?;
-    Ok(Some(PendingItem { id, account_id, message_id, subject, payload_json }))
+    Ok(Some(PendingItem { id, account_id, message_id, subject, internal_date, payload_json }))
 }
 
 
@@ -977,7 +994,7 @@ mod tests {
     #[test]
     fn fee_components_create_code_and_admin_rows_when_admin_is_not_discounted() {
         let (database, path) = create_test_database();
-        let item = PendingItem { id: 1, account_id: 1, message_id: "message-1".to_string(), subject: None, payload_json: "{}".to_string() };
+        let item = PendingItem { id: 1, account_id: 1, message_id: "message-1".to_string(), subject: None, internal_date: Some("23/11/2026".to_string()), payload_json: "{}".to_string() };
         let parsed = super::email_parser::parse_flip_email(None, "Informasi Transaksi\nID Transaksi\n#CS261123103326704Y5ULUO\nWaktu Terkirim\n23 November 2026 13:30 WIB\nNama Tujuan\nFLIPTECH LENTERA INS\nNominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nJumlah Transfer\nRp2.163.525");
         create_email_fee_component_rows(&database, &item, &parsed).unwrap();
         let connection = database.connection.lock().unwrap();
@@ -991,7 +1008,7 @@ mod tests {
     #[test]
     fn fee_component_discount_removes_admin_row_but_keeps_unique_code() {
         let (database, path) = create_test_database();
-        let item = PendingItem { id: 1, account_id: 1, message_id: "message-1".to_string(), subject: None, payload_json: "{}".to_string() };
+        let item = PendingItem { id: 1, account_id: 1, message_id: "message-1".to_string(), subject: None, internal_date: Some("23/11/2026".to_string()), payload_json: "{}".to_string() };
         let parsed = super::email_parser::parse_flip_email(None, "Informasi Transaksi\nID Transaksi\n#CS261123103326704Y5ULUO\nWaktu Terkirim\n23 November 2026 13:30 WIB\nNama Tujuan\nFLIPTECH LENTERA INS\nNominal\nRp2.159.200\nBiaya Admin\nRp4.000\nKode Unik\nRp325\nDiskon\n--Rp4.000\nJumlah Transfer\nRp2.159.525");
         create_email_fee_component_rows(&database, &item, &parsed).unwrap();
         let connection = database.connection.lock().unwrap();
