@@ -1,19 +1,14 @@
 import { useState } from 'react';
 import './App.css';
-import EmailHistory from '../features/email-history/components/EmailHistory';
 import Dashboard from '../features/dashboard/pages/Dashboard';
 import Transactions from '../features/transactions/pages/Transactions';
-import CopyTracking from '../features/copy-tracking/pages/CopyTracking';
 import Settings from '../features/settings/pages/Settings';
 
-type AppPage = 'dashboard' | 'transactions' | 'copy-tracking' | 'history' | 'settings';
+type AppPage = 'dashboard' | 'transactions' | 'settings';
 
 const navigation: { id: AppPage; label: string; icon: string }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: '◫' },
   { id: 'transactions', label: 'Transaksi', icon: '⇄' },
-  { id: 'copy-tracking', label: 'Copy Tracking', icon: '◷' },
-
-  { id: 'history', label: 'Riwayat Email', icon: '▤' },
   { id: 'settings', label: 'Pengaturan', icon: '⚙' },
 ];
 
@@ -75,9 +70,7 @@ function App() {
         <div className={`page-content ${page === 'dashboard' ? 'dashboard-content' : ''}`}>
           {page === 'dashboard' ? <Dashboard onOpenTransactions={() => setPage('transactions')} />
             : page === 'transactions' ? <Transactions />
-              : page === 'copy-tracking' ? <CopyTracking />
-              : page === 'settings' ? <Settings />
-                : <EmailHistory />}
+              : <Settings />}
         </div>
       </main>
     </div>

@@ -59,6 +59,7 @@ export default function GmailAccountTest() {
   const [connecting, setConnecting] = useState(false);
   const [syncingAccountIds, setSyncingAccountIds] = useState<Set<number>>(new Set());
   const [startDates, setStartDates] = useState<Record<number, string>>({});
+  const [endDates, setEndDates] = useState<Record<number, string>>({});
   const [progress, setProgress] = useState<Record<number, SyncProgress>>({});
   const [syncStates, setSyncStates] = useState<Record<number, SyncState>>({});
   const [error, setError] = useState<string | null>(null);
@@ -87,10 +88,12 @@ export default function GmailAccountTest() {
         if (state) nextStates[accountId] = state;
       }
       setSyncStates((current) => ({ ...current, ...nextStates }));
-      setStartDates((current) => {
+      setEndDates((current) => {
         const next = { ...current };
+        const today = new Date();
+        const defaultEnd = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
         for (const account of rows) {
-          if (!next[account.id]) next[account.id] = account.syncStartDate ?? new Date().toISOString().slice(0, 10);
+          if (!(account.id in next)) next[account.id] = defaultEnd;
         }
         return next;
       });
@@ -144,14 +147,24 @@ export default function GmailAccountTest() {
     } catch (err) { setError(String(err)); }
   }
 
+  function resetEndDateToDefault(accountId: number) {
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    setEndDates((current) => ({ ...current, [accountId]: today }));
+  }
+
   async function startSync(account: GmailAccount) {
-    const date = startDates[account.id];
-    if (!date) { setError("Tentukan tanggal awal sinkronisasi."); return; }
+    const startDate = startDates[account.id] || null;
+    const endDate = endDates[account.id] || (() => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`; })();
+    if (startDate && endDate && startDate > endDate) {
+      setError("Tanggal awal tidak boleh melewati tanggal akhir.");
+      return;
+    }
     setSyncingAccountIds((current) => new Set(current).add(account.id));
     setError(null);
     setMessage(`Memulai sinkronisasi ${account.emailAddress}...`);
     try {
-      const summary = await invoke<SyncSummary>("start_initial_gmail_sync", { accountId: account.id, startDate: date });
+      const summary = await invoke<SyncSummary>("start_initial_gmail_sync", { accountId: account.id, startDate, endDate });
       setMessage(`Sinkronisasi selesai. ${summary.processedMessages} message baru, ${summary.skippedMessages} dilewati, ${summary.attachmentCount} attachment PNG/JPEG tersimpan.`);
       await loadAccounts();
     } catch (err) { setError(String(err)); setMessage(null); }
@@ -253,13 +266,13 @@ export default function GmailAccountTest() {
                 <div className="gmail-sync-area">
                   <div className="gmail-sync-title"><span className="gmail-sync-symbol">↻</span><strong>Sinkronisasi</strong></div>
                   <div className="gmail-sync-row">
-                    <label className="gmail-date-field"><span>Mulai dari tanggal</span><input id={`sync-date-${account.id}`} type="date" value={startDates[account.id] ?? ""} disabled={isSyncing} onChange={(e) => setStartDates((old) => ({ ...old, [account.id]: e.target.value }))} /></label>
+                    <label className="gmail-date-field"><span>Tanggal awal (Opsional)</span><input id={`sync-start-date-${account.id}`} type="date" value={startDates[account.id] ?? ""} disabled={isSyncing} onChange={(e) => setStartDates((old) => ({ ...old, [account.id]: e.target.value }))} /></label>
+                    <label className="gmail-date-field gmail-date-end-field"><span>Tanggal akhir</span><div className="gmail-date-end-control"><input id={`sync-end-date-${account.id}`} type="date" value={endDates[account.id] ?? ""} disabled={isSyncing} onChange={(e) => setEndDates((old) => ({ ...old, [account.id]: e.target.value }))} /><button className="gmail-btn gmail-btn-secondary gmail-date-default" onClick={() => resetEndDateToDefault(account.id)} disabled={isSyncing}>Default</button></div></label>
                     <button className="gmail-btn gmail-btn-primary gmail-sync-initial" onClick={() => void startSync(account)} disabled={isSyncing || !isConnected}>
-                      <span>{isSyncing ? "◌" : "▶"}</span>{isSyncing ? "Sinkronisasi berjalan..." : "Mulai Sync Awal"}
+                      <span>{isSyncing ? "◌" : "▶"}</span>{isSyncing ? "Sinkronisasi berjalan..." : "Sinkronkan"}
                     </button>
-                    {account.historyId && <button className="gmail-btn gmail-btn-secondary gmail-sync-incremental" onClick={() => void startIncrementalSync(account)} disabled={isSyncing || !isConnected}><span>↻</span> Sync Email Baru</button>}
                   </div>
-                  <p className="gmail-sync-helper">Sync awal mengambil email sejak tanggal yang dipilih. Sync berikutnya hanya mengambil email baru.</p>
+                  <p className="gmail-sync-helper">Tanggal awal opsional untuk membatasi rentang email. Tanggal akhir default ke hari ini; tombol Default mengembalikannya ke hari ini.</p>
                 </div>
 
                 <div className={`gmail-sync-status ${isSyncing ? "status-running" : savedState?.lastError ? "status-error" : "status-idle"}`}>

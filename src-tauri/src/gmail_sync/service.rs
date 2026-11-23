@@ -829,22 +829,60 @@ fn emit_progress(
     );
 }
 
+fn next_calendar_day(date: &str) -> Result<String, String> {
+    let parts: Vec<i32> = date.split('-').map(|part| part.parse::<i32>().map_err(|_| "Tanggal akhir tidak valid".to_string())).collect::<Result<_, _>>()?;
+    if parts.len() != 3 || parts[0] < 1 || parts[1] < 1 || parts[1] > 12 || parts[2] < 1 || parts[2] > 31 {
+        return Err("Tanggal akhir harus berformat YYYY-MM-DD".into());
+    }
+    let (year, month, day) = (parts[0], parts[1], parts[2]);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => if leap { 29 } else { 28 },
+        _ => return Err("Tanggal akhir tidak valid".into()),
+    };
+    if day > days_in_month { return Err("Tanggal akhir tidak valid".into()); }
+    let (ny, nm, nd) = if day < days_in_month { (year, month, day + 1) } else if month < 12 { (year, month + 1, 1) } else { (year + 1, 1, 1) };
+    Ok(format!("{ny:04}-{nm:02}-{nd:02}"))
+}
+
+fn parse_initial_sync_filter(filter: &str) -> (Option<String>, Option<String>) {
+    if let Some(rest) = filter.strip_prefix("range:") {
+        if let Some((start, end)) = rest.split_once(':') {
+            return (Some(start.to_string()), Some(end.to_string()));
+        }
+    }
+    if let Some(start) = filter.strip_prefix("start:") {
+        return (Some(start.to_string()), None);
+    }
+    if let Some(end) = filter.strip_prefix("end:") {
+        return (None, Some(end.to_string()));
+    }
+    (None, None)
+}
+
 async fn run_initial_sync(
     app: &AppHandle,
     database: &Database,
     account_id: i64,
-    start_date: &str,
+    start_date: Option<&str>,
+    end_date: Option<&str>,
 ) -> Result<SyncSummary, String> {
-    if start_date.len() != 10
-        || start_date.chars().nth(4) != Some('-')
-        || start_date.chars().nth(7) != Some('-')
-    {
-        return Err("Tanggal awal harus berformat YYYY-MM-DD".into());
-    }
+    let sync_filter = match (start_date, end_date) {
+        (Some(start), Some(end)) => format!("range:{start}:{end}"),
+        (Some(start), None) => format!("start:{start}"),
+        (None, Some(end)) => format!("end:{end}"),
+        (None, None) => "latest".to_string(),
+    };
+    let cutoff_exclusive = match end_date {
+        Some(date) => Some(next_calendar_day(date)?),
+        None => None,
+    };
 
     let info = load_account_sync_info(database, account_id)?;
 
-    let resume = info.sync_start_date.as_deref() == Some(start_date)
+    let resume = info.sync_start_date.as_deref() == Some(sync_filter.as_str())
         && matches!(
             info.sync_status.as_str(),
             "initial_sync" | "failed" | "authentication_required"
@@ -877,7 +915,7 @@ async fn run_initial_sync(
         database,
         account_id,
         "initial_sync",
-        start_date,
+        &sync_filter,
         page.as_deref(),
         &history_id,
         None,
@@ -894,17 +932,21 @@ async fn run_initial_sync(
                 "UPDATE gmail_accounts
                  SET sync_start_date = ?1, updated_at = CURRENT_TIMESTAMP
                  WHERE id = ?2",
-                params![start_date, account_id],
+                params![&sync_filter, account_id],
             )
             .map_err(|error| format!("Failed to save sync start date: {error}"))?;
     }
 
     emit_progress(app, account_id, "initial_sync", 0, 0, None);
 
-    let query = format!(
-        "after:{} from:no-reply@flip.id",
-        start_date.replace('-', "/")
-    );
+    let mut query_parts = vec!["from:no-reply@flip.id".to_string()];
+    if let Some(start) = start_date {
+        query_parts.push(format!("after:{}", start.replace('-', "/")));
+    }
+    if let Some(cutoff) = cutoff_exclusive.as_deref() {
+        query_parts.push(format!("before:{}", cutoff.replace('-', "/")));
+    }
+    let query = query_parts.join(" ");
 
     let mut processed = 0u64;
     let mut skipped = 0u64;
@@ -936,7 +978,7 @@ async fn run_initial_sync(
                     database,
                     account_id,
                     "initial_sync",
-                    start_date,
+                    &sync_filter,
                     None,
                     &history_id,
                     None,
@@ -991,7 +1033,7 @@ async fn run_initial_sync(
             database,
             account_id,
             "initial_sync",
-            start_date,
+            &sync_filter,
             page.as_deref(),
             &history_id,
             None,
@@ -1008,7 +1050,7 @@ async fn run_initial_sync(
         database,
         account_id,
         "completed",
-        start_date,
+        &sync_filter,
         None,
         &history_id,
         Some(&history_id),
@@ -1143,7 +1185,10 @@ async fn run_incremental_sync(
                 // Gmail History IDs are short-lived. Re-scan from the configured
                 // start date; message-level deduplication prevents duplicates.
                 emit_progress(app, account_id, "history_expired_fallback", 0, 0, None);
-                return run_initial_sync(app, database, account_id, &start_date).await;
+                return {
+                    let (fallback_start, fallback_end) = parse_initial_sync_filter(&start_date);
+                    run_initial_sync(app, database, account_id, fallback_start.as_deref(), fallback_end.as_deref()).await
+                };
             }
             Err(error) => return Err(error),
         };
@@ -1301,7 +1346,10 @@ pub(crate) async fn run_automatic_sync_for_account(
     let result = if history_id.is_some() {
         run_incremental_sync(app, database, account_id).await
     } else if let Some(start_date) = start_date {
-        run_initial_sync(app, database, account_id, &start_date).await
+        {
+                    let (fallback_start, fallback_end) = parse_initial_sync_filter(&start_date);
+                    run_initial_sync(app, database, account_id, fallback_start.as_deref(), fallback_end.as_deref()).await
+                }
     } else {
         return Ok(None);
     };
@@ -1377,10 +1425,14 @@ pub async fn start_initial_gmail_sync(
     database: State<'_, Database>,
     coordinator: State<'_, SyncCoordinator>,
     account_id: i64,
-    start_date: String,
+    start_date: Option<String>,
+    end_date: Option<String>,
 ) -> Result<SyncSummary, String> {
     let _permit = coordinator.try_acquire(account_id)?;
-    let result = run_initial_sync(&app, &database, account_id, &start_date).await;
+    if let (Some(start), Some(end)) = (&start_date, &end_date) {
+        if start > end { return Err("Tanggal awal tidak boleh melewati tanggal akhir".into()); }
+    }
+    let result = run_initial_sync(&app, &database, account_id, start_date.as_deref(), end_date.as_deref()).await;
 
     if let Err(error) = &result {
         persist_command_error(&database, account_id, error);
