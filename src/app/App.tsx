@@ -71,7 +71,7 @@ function App() {
 
 
       <main className="main-content">
-        {page !== 'dashboard' && <header className="topbar">
+        {page !== 'dashboard' && page !== 'transactions' && <header className="topbar">
           <span className="breadcrumb">Flip V2 <span>/</span> {activePageLabel}</span>
           <span className="local-badge"><span className="connection-dot" /> Database lokal</span>
         </header>}
