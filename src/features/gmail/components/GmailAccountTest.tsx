@@ -177,30 +177,6 @@ export default function GmailAccountTest() {
     }
   }
 
-  async function startIncrementalSync(account: GmailAccount) {
-    setSyncingAccountIds((current) => new Set(current).add(account.id));
-    setError(null);
-    setMessage(`Memeriksa email baru untuk ${account.emailAddress}...`);
-    try {
-      const summary = await invoke<SyncSummary>("start_incremental_gmail_sync", {
-        accountId: account.id,
-      });
-      setMessage(
-        `Sinkronisasi inkremental selesai. ${summary.processedMessages} message baru, ` +
-        `${summary.skippedMessages} dilewati, ${summary.attachmentCount} attachment PNG/JPEG tersimpan.`,
-      );
-      await loadAccounts();
-    } catch (err) {
-      setError(String(err));
-      setMessage(null);
-    } finally {
-      setSyncingAccountIds((current) => {
-        const next = new Set(current);
-        next.delete(account.id);
-        return next;
-      });
-    }
-  }
 
   return (
     <section className="gmail-page" aria-labelledby="gmail-accounts-title">
